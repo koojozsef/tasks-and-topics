@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(pwd)"
+TASKS_DIR="$ROOT/tasks"
+TOPICS_DIR="$ROOT/topics"
+ARCHIVE_DIR="$ROOT/archive"
+ACTIVE_FILE="$TASKS_DIR/active.md"
+TEMPLATE_FILE="$TOPICS_DIR/template/index.md"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  tt init
+  tt add task [-p high|medium|low] "task text"
+  tt add topic "topic name"
+  tt ls tasks
+  tt ls topics
+  tt done <task-number>
+  tt archive topic <topic-folder>
+  tt apply
+  tt help
+EOF
+}
+
+init_repo() {
+  mkdir -p "$TASKS_DIR" "$TOPICS_DIR/template" "$ARCHIVE_DIR"
+
+  if [[ ! -f "$ACTIVE_FILE" ]]; then
+    cat >"$ACTIVE_FILE" <<'EOF'
+# Active Tasks
+
+## High Priority
+
+## Medium Priority
+
+## Low Priority
+EOF
+  fi
+
+  if [[ ! -f "$TEMPLATE_FILE" ]]; then
+    cat >"$TEMPLATE_FILE" <<'EOF'
+# Topic: Template topic
+
+**Started:** 2026-06-22
+**Priority:** Medium
+
+---
+
+## Overview
+
+...
+
+---
+
+## Key Goals
+
+- [ ] ...
+
+---
+
+## Notes
+
+- ...
+EOF
+  fi
+
+  echo "Initialized task/topic structure in $ROOT"
+}
+
+normalize_priority() {
+  case "${1,,}" in
+    high) echo "High" ;;
+    medium) echo "Medium" ;;
+    low) echo "Low" ;;
+    *) echo "" ;;
+  esac
+}
+
+insert_task() {
+  local priority="$1"
+  local text="$2"
+  local topic_link="${3:-}"
+  local section="## ${priority} Priority"
+  local tmp
+  tmp="$(mktemp)"
+
+  awk -v section="$section" -v task="- [ ] $text" -v link="$topic_link" '
+    {
+      print
+      if ($0 == section && !inserted) {
+        if (link != "") {
+          print task " " link
+        } else {
+          print task
+        }
+        inserted = 1
+      }
+    }
+    END {
+      if (!inserted) {
+        print ""
+        print section
+        if (link != "") {
+          print task " " link
+        } else {
+          print task
+        }
+      }
+    }
+  ' "$ACTIVE_FILE" >"$tmp"
+
+  mv "$tmp" "$ACTIVE_FILE"
+}
+
+add_task() {
+  mkdir -p "$TASKS_DIR"
+  [[ -f "$ACTIVE_FILE" ]] || init_repo >/dev/null
+
+  local priority="Medium"
+  if [[ "${1:-}" == "-p" || "${1:-}" == "--priority" ]]; then
+    local parsed
+    parsed="$(normalize_priority "${2:-}")"
+    [[ -n "$parsed" ]] || { echo "Invalid priority: ${2:-}"; exit 1; }
+    priority="$parsed"
+    shift 2
+  fi
+
+  local text="${*:-}"
+  [[ -n "$text" ]] || { echo "Missing task text"; usage; exit 1; }
+
+  # Ask for related topic
+  echo ""
+  echo "📁 Latest Topics:"
+  echo ""
+
+  local -a topics
+  mapfile -t topics < <(find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort -r | head -8)
+
+  local topic_link=""
+  local create_option=$(( ${#topics[@]} + 1 ))
+  if [[ ${#topics[@]} -gt 0 ]]; then
+    for i in "${!topics[@]}"; do
+      echo "  $((i+1))) ${topics[$i]}"
+    done
+  fi
+
+  echo ""
+  echo "  0) No topic"
+  echo "  ${create_option}) Create new topic"
+  echo ""
+
+  local selection
+  read -r -p "Select topic (0-${create_option}): " selection
+
+  if [[ "$selection" =~ ^[0-9]+$ ]]; then
+    if [[ "$selection" -gt 0 && "$selection" -le ${#topics[@]} ]]; then
+      local topic_name="${topics[$((selection-1))]}"
+      topic_link="- [Related: $topic_name](../topics/$topic_name/index.md)"
+    elif [[ "$selection" -eq "$create_option" ]]; then
+      local new_topic_name
+      read -r -p "New topic name: " new_topic_name
+      [[ -n "$new_topic_name" ]] || { echo "Topic name cannot be empty"; exit 1; }
+
+      add_topic "$new_topic_name" >/dev/null
+      local new_topic_folder
+      new_topic_folder="$(date +%F)-$(slugify "$new_topic_name")"
+      topic_link="- [Related: $new_topic_folder](../topics/$new_topic_folder/index.md)"
+      echo "Created and linked topic: $new_topic_folder"
+    fi
+  else
+    if [[ "$selection" -ne 0 ]]; then
+      echo "Invalid selection: $selection"
+      exit 1
+    else
+      echo "No topic linked."
+    fi
+  fi
+
+  insert_task "$priority" "$text" "$topic_link"
+  if [[ -n "$topic_link" ]]; then
+    echo "Added $priority task: $text"
+    echo "   Linked to: ${topic_link#*: }"
+  else
+    echo "Added $priority task: $text"
+  fi
+}
+
+slugify() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
+}
+
+add_topic() {
+  mkdir -p "$TOPICS_DIR"
+  local name="${*:-}"
+  [[ -n "$name" ]] || { echo "Missing topic name"; usage; exit 1; }
+
+  local date slug dir index
+  date="$(date +%F)"
+  slug="$(slugify "$name")"
+  [[ -n "$slug" ]] || { echo "Topic name produced empty slug"; exit 1; }
+
+  dir="$TOPICS_DIR/$date-$slug"
+  index="$dir/index.md"
+
+  [[ ! -e "$dir" ]] || { echo "Topic already exists: $dir"; exit 1; }
+  mkdir -p "$dir"
+
+  if [[ -f "$TEMPLATE_FILE" ]]; then
+    awk -v title="$name" -v d="$date" '
+      {
+        if ($0 ~ /^# Topic:/ && !doneTitle) { print "# Topic: " title; doneTitle=1; next }
+        if ($0 ~ /^\*\*Started:\*\*/ && !doneDate) { print "**Started:** " d; doneDate=1; next }
+        print
+      }
+      END {
+        if (!doneTitle) print "# Topic: " title
+        if (!doneDate) print "**Started:** " d
+      }
+    ' "$TEMPLATE_FILE" >"$index"
+  else
+    cat >"$index" <<EOF
+# Topic: $name
+
+**Started:** $date
+**Priority:** Medium
+
+---
+
+## Overview
+
+...
+
+---
+
+## Key Goals
+
+- [ ] ...
+EOF
+  fi
+
+  echo "Created topic: $dir"
+}
+
+ls_tasks() {
+  [[ -f "$ACTIVE_FILE" ]] || { echo "No active tasks file. Run: tt init"; exit 1; }
+  awk '
+    /^## High Priority$/ { prio="High"; next }
+    /^## Medium Priority$/ { prio="Medium"; next }
+    /^## Low Priority$/ { prio="Low"; next }
+    /^- \[ \] / {
+      c++
+      printf "%d. [%s] %s\n", c, prio, substr($0, 7)
+    }
+    END {
+      if (c == 0) print "No active tasks."
+    }
+  ' "$ACTIVE_FILE"
+}
+
+ls_topics() {
+  [[ -d "$TOPICS_DIR" ]] || { echo "No topics directory. Run: tt init"; exit 1; }
+  find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort
+}
+
+done_task() {
+  [[ -f "$ACTIVE_FILE" ]] || { echo "No active tasks file. Run: tt init"; exit 1; }
+  local n="${1:-}"
+  [[ "$n" =~ ^[0-9]+$ ]] || { echo "Usage: tt done <task-number>"; exit 1; }
+
+  local line task_text
+  line="$(awk -v n="$n" '/^- \[ \] /{c++; if(c==n){print NR; exit}}' "$ACTIVE_FILE")"
+  [[ -n "$line" ]] || { echo "No task number $n"; exit 1; }
+
+  # Extract the task text
+  task_text="$(sed -n "${line}p" "$ACTIVE_FILE" | sed 's/^- \[ \] //')"
+
+  # Create done.md if it doesn't exist
+  local done_file="$TASKS_DIR/done.md"
+  if [[ ! -f "$done_file" ]]; then
+    cat >"$done_file" <<'EOF'
+# Completed Tasks
+
+EOF
+  fi
+
+  # Add task to done.md with today's date
+  local date
+  date="$(date +%F)"
+  echo "- [x] $task_text _(completed: $date)_" >> "$done_file"
+
+  # Remove task from active.md
+  sed -i "${line}d" "$ACTIVE_FILE"
+  echo "Task #$n moved to done.md"
+}
+
+archive_topic() {
+  local topic="${1:-}"
+  [[ -n "$topic" ]] || { echo "Usage: tt archive topic <topic-folder>"; exit 1; }
+
+  local src="$TOPICS_DIR/$topic"
+  local dst="$ARCHIVE_DIR/$topic"
+
+  [[ -d "$src" ]] || { echo "Topic not found: $src"; exit 1; }
+  mkdir -p "$ARCHIVE_DIR"
+  [[ ! -e "$dst" ]] || { echo "Archive target already exists: $dst"; exit 1; }
+
+  mv "$src" "$dst"
+  echo "Archived topic: $topic"
+}
+
+apply_changes() {
+  cd "$ROOT"
+  git add -A
+  git commit -m "Update: tasks and topics" || { echo "Nothing to commit"; exit 0; }
+  git push || { echo "Failed to push"; exit 1; }
+  echo "✅ Changes committed and pushed"
+}
+
+main() {
+  local cmd="${1:-}"
+  if [[ -z "$cmd" ]]; then
+    ls_tasks
+    return
+  fi
+  shift || true
+
+  case "$cmd" in
+    init)
+      init_repo
+      ;;
+    add)
+      case "${1:-}" in
+        task) shift; add_task "$@" ;;
+        topic) shift; add_topic "$@" ;;
+        *) usage; exit 1 ;;
+      esac
+      ;;
+    ls)
+      case "${1:-}" in
+        tasks) ls_tasks ;;
+        topics) ls_topics ;;
+        *) usage; exit 1 ;;
+      esac
+      ;;
+    done)
+      done_task "$@"
+      ;;
+    archive)
+      [[ "${1:-}" == "topic" ]] || { usage; exit 1; }
+      shift
+      archive_topic "$@"
+      ;;
+    apply)
+      apply_changes
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      add_task "$cmd" "$@"
+      ;;
+  esac
+}
+
+main "$@"
