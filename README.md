@@ -36,6 +36,7 @@ tt add topic "job stuffs"
 tt ls tasks
 tt ls topics
 tt done 2
+tt mm "weekly sync"
 tt archive topic 2026-06-22-job-stuffs
 tt help
 ```
@@ -48,7 +49,18 @@ tt help
 - `tt ls tasks`: lists open tasks as numbered items.
 - `tt ls topics`: lists current topic folders (excluding `template`).
 - `tt done N`: marks the Nth open task as done.
+- `tt mm ["meeting title"]`: creates a meeting minutes file. You can select an existing topic, create a new topic, or save into root `meeting-minutes/`.
 - `tt archive topic NAME`: moves a topic from `topics/` to `archive/`.
+
+### Meeting minutes behavior
+
+- File name format: `YYYY-MM-DD-meeting-title.md`.
+- If title is not provided as argument, `tt mm` asks for it.
+- Topic selection works like `tt add task`.
+- Select existing topic -> saves under `topics/<topic>/meeting-minutes/`.
+- Create new topic -> creates topic and saves under that topic's `meeting-minutes/`.
+- No topic -> saves under root `meeting-minutes/`.
+- A simple template is used with sections for attendees, agenda, discussion, action items, and notes.
 
 ## Example structure
 
@@ -78,6 +90,10 @@ tt add topic "job stuffs"  # Creates new topic folder `topics/YYYY-MM-DD-job-stu
 
 ```bash
 tt add task "this is related to the **job topic**"  # now select 1) to connect task to topic
+```
+
+```bash
+tt mm "weekly sync"  # pick 0 for root meeting-minutes/ or select a topic
 ```
 
 ```bash

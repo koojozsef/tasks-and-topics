@@ -5,6 +5,7 @@ ROOT="$(pwd)"
 TASKS_DIR="$ROOT/tasks"
 TOPICS_DIR="$ROOT/topics"
 ARCHIVE_DIR="$ROOT/archive"
+MEETING_MINUTES_DIR="$ROOT/meeting-minutes"
 ACTIVE_FILE="$TASKS_DIR/active.md"
 TEMPLATE_FILE="$TOPICS_DIR/template/index.md"
 
@@ -18,6 +19,7 @@ Usage:
   tt ls topics
   tt done <task-number>
   tt archive topic <topic-folder>
+  tt mm ["meeting title"]
   tt apply
   tt help
 EOF
@@ -239,7 +241,7 @@ add_topic() {
 EOF
   fi
 
-  echo "Created topic: $dir"
+  echo "Created topic: $dir/index.md"
 }
 
 ls_tasks() {
@@ -294,6 +296,101 @@ EOF
   echo "Task #$n moved to done.md"
 }
 
+add_meeting_minutes() {
+  local name="${*:-}"
+
+  if [[ -z "$name" ]]; then
+    read -r -p "Meeting title: " name
+    [[ -n "$name" ]] || { echo "Meeting title cannot be empty"; exit 1; }
+  fi
+
+  echo ""
+  echo "📁 Latest Topics:"
+  echo ""
+
+  local -a topics
+  mapfile -t topics < <(find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort -r | head -8)
+
+  local create_option=$(( ${#topics[@]} + 1 ))
+  if [[ ${#topics[@]} -gt 0 ]]; then
+    for i in "${!topics[@]}"; do
+      echo "  $((i+1))) ${topics[$i]}"
+    done
+  fi
+
+  echo ""
+  echo "  0) No topic (root meeting-minutes/)"
+  echo "  ${create_option}) Create new topic"
+  echo ""
+
+  local selection
+  read -r -p "Select topic (0-${create_option}): " selection
+
+  local mm_dir
+  if [[ "$selection" =~ ^[0-9]+$ ]]; then
+    if [[ "$selection" -gt 0 && "$selection" -le ${#topics[@]} ]]; then
+      local topic_name="${topics[$((selection-1))]}"
+      mm_dir="$TOPICS_DIR/$topic_name/meeting-minutes"
+    elif [[ "$selection" -eq "$create_option" ]]; then
+      local new_topic_name
+      read -r -p "New topic name: " new_topic_name
+      [[ -n "$new_topic_name" ]] || { echo "Topic name cannot be empty"; exit 1; }
+      add_topic "$new_topic_name" >/dev/null
+      local new_topic_folder
+      new_topic_folder="$(date +%F)-$(slugify "$new_topic_name")"
+      mm_dir="$TOPICS_DIR/$new_topic_folder/meeting-minutes"
+      echo "Created and linked topic: $new_topic_folder"
+    else
+      mm_dir="$MEETING_MINUTES_DIR"
+    fi
+  else
+    mm_dir="$MEETING_MINUTES_DIR"
+  fi
+
+  mkdir -p "$mm_dir"
+
+  local date slug filename filepath
+  date="$(date +%F)"
+  slug="$(slugify "$name")"
+  filename="${date}-${slug}.md"
+  filepath="$mm_dir/$filename"
+
+  [[ ! -e "$filepath" ]] || { echo "File already exists: $filepath"; exit 1; }
+
+  cat >"$filepath" <<EOF
+# Meeting Minutes: $name
+
+**Date:** $date
+**Attendees:** 
+
+---
+
+## Agenda
+
+- 
+
+---
+
+## Discussion
+
+- 
+
+---
+
+## Action Items
+
+- [ ] 
+
+---
+
+## Notes
+
+- 
+EOF
+
+  echo "Created meeting minutes: $filepath"
+}
+
 archive_topic() {
   local topic="${1:-}"
   [[ -n "$topic" ]] || { echo "Usage: tt archive topic <topic-folder>"; exit 1; }
@@ -345,6 +442,9 @@ main() {
       ;;
     done)
       done_task "$@"
+      ;;
+    mm)
+      add_meeting_minutes "$@"
       ;;
     archive)
       [[ "${1:-}" == "topic" ]] || { usage; exit 1; }
