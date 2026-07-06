@@ -9,20 +9,51 @@ MEETING_MINUTES_DIR="$ROOT/meeting-minutes"
 ACTIVE_FILE="$TASKS_DIR/active.md"
 TEMPLATE_FILE="$TOPICS_DIR/template/index.md"
 
+# Terminal styling (falls back to plain text when colors are unsupported).
+RESET=""
+BOLD=""
+DIM=""
+RED=""
+GREEN=""
+YELLOW=""
+BLUE=""
+CYAN=""
+
+if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+  if [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
+    RESET="$(tput sgr0)"
+    BOLD="$(tput bold)"
+    DIM="$(tput dim)"
+    RED="$(tput setaf 1)"
+    GREEN="$(tput setaf 2)"
+    YELLOW="$(tput setaf 3)"
+    BLUE="$(tput setaf 4)"
+    CYAN="$(tput setaf 6)"
+  fi
+fi
+
+msg_info() { printf "%b\n" "${BLUE}[info]${RESET} $*"; }
+msg_ok() { printf "%b\n" "${GREEN}[ok]${RESET} $*"; }
+msg_warn() { printf "%b\n" "${YELLOW}[warn]${RESET} $*"; }
+msg_error() { printf "%b\n" "${RED}[error]${RESET} $*" >&2; }
+
+section() {
+  printf "\n%b\n" "${BOLD}${CYAN}$1${RESET}"
+}
+
 usage() {
-  cat <<'EOF'
-Usage:
-  tt init
-  tt add task [-p high|medium|low] "task text"
-  tt add topic "topic name"
-  tt ls tasks
-  tt ls topics
-  tt done <task-number>
-  tt archive topic <topic-folder>
-  tt mm ["meeting title"]
-  tt apply
-  tt help
-EOF
+  section "tt - Tasks and Topics"
+  printf "%b\n" "${BOLD}Usage${RESET}"
+  printf "  tt init\n"
+  printf "  tt add task [-p high|medium|low] \"task text\"\n"
+  printf "  tt add topic \"topic name\"\n"
+  printf "  tt ls tasks\n"
+  printf "  tt ls topics\n"
+  printf "  tt done <task-number>\n"
+  printf "  tt archive topic <topic-folder>\n"
+  printf "  tt mm [\"meeting title\"]\n"
+  printf "  tt apply\n"
+  printf "  tt help\n"
 }
 
 init_repo() {
@@ -67,7 +98,7 @@ EOF
 EOF
   fi
 
-  echo "Initialized task/topic structure in $ROOT"
+  msg_ok "Initialized task/topic structure in $ROOT"
 }
 
 normalize_priority() {
@@ -123,18 +154,16 @@ add_task() {
   if [[ "${1:-}" == "-p" || "${1:-}" == "--priority" ]]; then
     local parsed
     parsed="$(normalize_priority "${2:-}")"
-    [[ -n "$parsed" ]] || { echo "Invalid priority: ${2:-}"; exit 1; }
+    [[ -n "$parsed" ]] || { msg_error "Invalid priority: ${2:-}"; exit 1; }
     priority="$parsed"
     shift 2
   fi
 
   local text="${*:-}"
-  [[ -n "$text" ]] || { echo "Missing task text"; usage; exit 1; }
+  [[ -n "$text" ]] || { msg_error "Missing task text"; usage; exit 1; }
 
   # Ask for related topic
-  echo ""
-  echo "📁 Latest Topics:"
-  echo ""
+  section "Select Related Topic"
 
   local -a topics
   mapfile -t topics < <(find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort -r | head -8)
@@ -143,17 +172,18 @@ add_task() {
   local create_option=$(( ${#topics[@]} + 1 ))
   if [[ ${#topics[@]} -gt 0 ]]; then
     for i in "${!topics[@]}"; do
-      echo "  $((i+1))) ${topics[$i]}"
+      printf "  %b\n" "${DIM}$((i+1)))${RESET} ${topics[$i]}"
     done
+  else
+    printf "  %b\n" "${DIM}(no existing topics)${RESET}"
   fi
 
-  echo ""
-  echo "  0) No topic"
-  echo "  ${create_option}) Create new topic"
-  echo ""
+  printf "\n"
+  printf "  %b\n" "${DIM}0)${RESET} No topic"
+  printf "  %b\n\n" "${DIM}${create_option})${RESET} Create new topic"
 
   local selection
-  read -r -p "Select topic (0-${create_option}): " selection
+  read -r -p "Select topic [0-${create_option}]: " selection
 
   if [[ "$selection" =~ ^[0-9]+$ ]]; then
     if [[ "$selection" -gt 0 && "$selection" -le ${#topics[@]} ]]; then
@@ -162,29 +192,27 @@ add_task() {
     elif [[ "$selection" -eq "$create_option" ]]; then
       local new_topic_name
       read -r -p "New topic name: " new_topic_name
-      [[ -n "$new_topic_name" ]] || { echo "Topic name cannot be empty"; exit 1; }
+      [[ -n "$new_topic_name" ]] || { msg_error "Topic name cannot be empty"; exit 1; }
 
       add_topic "$new_topic_name" >/dev/null
       local new_topic_folder
       new_topic_folder="$(date +%F)-$(slugify "$new_topic_name")"
       topic_link="- [Related: $new_topic_folder](../topics/$new_topic_folder/index.md)"
-      echo "Created and linked topic: $new_topic_folder"
+      msg_ok "Created and linked topic: $new_topic_folder"
     fi
+  elif [[ "$selection" == "" ]]; then
+    msg_warn "No selection provided. Proceeding without topic."
   else
-    if [[ "$selection" -ne 0 ]]; then
-      echo "Invalid selection: $selection"
-      exit 1
-    else
-      echo "No topic linked."
-    fi
+    msg_error "Invalid selection: $selection"
+    exit 1
   fi
 
   insert_task "$priority" "$text" "$topic_link"
   if [[ -n "$topic_link" ]]; then
-    echo "Added $priority task: $text"
-    echo "   Linked to: ${topic_link#*: }"
+    msg_ok "Added ${priority} task: $text"
+    printf "   %b\n" "${DIM}Linked to:${RESET} ${topic_link#*: }"
   else
-    echo "Added $priority task: $text"
+    msg_ok "Added ${priority} task: $text"
   fi
 }
 
@@ -195,17 +223,17 @@ slugify() {
 add_topic() {
   mkdir -p "$TOPICS_DIR"
   local name="${*:-}"
-  [[ -n "$name" ]] || { echo "Missing topic name"; usage; exit 1; }
+  [[ -n "$name" ]] || { msg_error "Missing topic name"; usage; exit 1; }
 
   local date slug dir index
   date="$(date +%F)"
   slug="$(slugify "$name")"
-  [[ -n "$slug" ]] || { echo "Topic name produced empty slug"; exit 1; }
+  [[ -n "$slug" ]] || { msg_error "Topic name produced empty slug"; exit 1; }
 
   dir="$TOPICS_DIR/$date-$slug"
   index="$dir/index.md"
 
-  [[ ! -e "$dir" ]] || { echo "Topic already exists: $dir"; exit 1; }
+  [[ ! -e "$dir" ]] || { msg_error "Topic already exists: $dir"; exit 1; }
   mkdir -p "$dir"
 
   if [[ -f "$TEMPLATE_FILE" ]]; then
@@ -241,18 +269,25 @@ add_topic() {
 EOF
   fi
 
-  echo "Created topic: $dir/index.md"
+  msg_ok "Created topic: $dir/index.md"
 }
 
 ls_tasks() {
-  [[ -f "$ACTIVE_FILE" ]] || { echo "No active tasks file. Run: tt init"; exit 1; }
-  awk '
+  [[ -f "$ACTIVE_FILE" ]] || { msg_error "No active tasks file. Run: tt init"; exit 1; }
+
+  section "Active Tasks"
+  awk -v c_high="${RED}" -v c_med="${YELLOW}" -v c_low="${CYAN}" -v c_reset="${RESET}" '
     /^## High Priority$/ { prio="High"; next }
     /^## Medium Priority$/ { prio="Medium"; next }
     /^## Low Priority$/ { prio="Low"; next }
     /^- \[ \] / {
       c++
-      printf "%d. [%s] %s\n", c, prio, substr($0, 7)
+      label=""
+      if (prio == "High") label=c_high "HIGH" c_reset
+      else if (prio == "Medium") label=c_med "MED" c_reset
+      else label=c_low "LOW" c_reset
+
+      printf "%2d) [%-4s] %s\n", c, label, substr($0, 7)
     }
     END {
       if (c == 0) print "No active tasks."
@@ -261,18 +296,33 @@ ls_tasks() {
 }
 
 ls_topics() {
-  [[ -d "$TOPICS_DIR" ]] || { echo "No topics directory. Run: tt init"; exit 1; }
-  find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort
+  [[ -d "$TOPICS_DIR" ]] || { msg_error "No topics directory. Run: tt init"; exit 1; }
+
+  section "Topics"
+  local -a topics
+  mapfile -t topics < <(find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort)
+
+  if [[ ${#topics[@]} -eq 0 ]]; then
+    printf "%s\n" "No topics yet."
+    return
+  fi
+
+  local i=1
+  local topic
+  for topic in "${topics[@]}"; do
+    printf "%2d) %s\n" "$i" "$topic"
+    ((i++))
+  done
 }
 
 done_task() {
-  [[ -f "$ACTIVE_FILE" ]] || { echo "No active tasks file. Run: tt init"; exit 1; }
+  [[ -f "$ACTIVE_FILE" ]] || { msg_error "No active tasks file. Run: tt init"; exit 1; }
   local n="${1:-}"
-  [[ "$n" =~ ^[0-9]+$ ]] || { echo "Usage: tt done <task-number>"; exit 1; }
+  [[ "$n" =~ ^[0-9]+$ ]] || { msg_error "Usage: tt done <task-number>"; exit 1; }
 
   local line task_text
   line="$(awk -v n="$n" '/^- \[ \] /{c++; if(c==n){print NR; exit}}' "$ACTIVE_FILE")"
-  [[ -n "$line" ]] || { echo "No task number $n"; exit 1; }
+  [[ -n "$line" ]] || { msg_error "No task number $n"; exit 1; }
 
   # Extract the task text
   task_text="$(sed -n "${line}p" "$ACTIVE_FILE" | sed 's/^- \[ \] //')"
@@ -293,7 +343,7 @@ EOF
 
   # Remove task from active.md
   sed -i "${line}d" "$ACTIVE_FILE"
-  echo "Task #$n moved to done.md"
+  msg_ok "Task #$n moved to done.md"
 }
 
 add_meeting_minutes() {
@@ -301,12 +351,10 @@ add_meeting_minutes() {
 
   if [[ -z "$name" ]]; then
     read -r -p "Meeting title: " name
-    [[ -n "$name" ]] || { echo "Meeting title cannot be empty"; exit 1; }
+    [[ -n "$name" ]] || { msg_error "Meeting title cannot be empty"; exit 1; }
   fi
 
-  echo ""
-  echo "📁 Latest Topics:"
-  echo ""
+  section "Select Topic For Meeting Minutes"
 
   local -a topics
   mapfile -t topics < <(find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort -r | head -8)
@@ -314,17 +362,18 @@ add_meeting_minutes() {
   local create_option=$(( ${#topics[@]} + 1 ))
   if [[ ${#topics[@]} -gt 0 ]]; then
     for i in "${!topics[@]}"; do
-      echo "  $((i+1))) ${topics[$i]}"
+      printf "  %b\n" "${DIM}$((i+1)))${RESET} ${topics[$i]}"
     done
+  else
+    printf "  %b\n" "${DIM}(no existing topics)${RESET}"
   fi
 
-  echo ""
-  echo "  0) No topic (root meeting-minutes/)"
-  echo "  ${create_option}) Create new topic"
-  echo ""
+  printf "\n"
+  printf "  %b\n" "${DIM}0)${RESET} No topic (root meeting-minutes/)"
+  printf "  %b\n\n" "${DIM}${create_option})${RESET} Create new topic"
 
   local selection
-  read -r -p "Select topic (0-${create_option}): " selection
+  read -r -p "Select topic [0-${create_option}]: " selection
 
   local mm_dir
   if [[ "$selection" =~ ^[0-9]+$ ]]; then
@@ -334,16 +383,19 @@ add_meeting_minutes() {
     elif [[ "$selection" -eq "$create_option" ]]; then
       local new_topic_name
       read -r -p "New topic name: " new_topic_name
-      [[ -n "$new_topic_name" ]] || { echo "Topic name cannot be empty"; exit 1; }
+      [[ -n "$new_topic_name" ]] || { msg_error "Topic name cannot be empty"; exit 1; }
       add_topic "$new_topic_name" >/dev/null
       local new_topic_folder
       new_topic_folder="$(date +%F)-$(slugify "$new_topic_name")"
       mm_dir="$TOPICS_DIR/$new_topic_folder/meeting-minutes"
-      echo "Created and linked topic: $new_topic_folder"
+      msg_ok "Created and linked topic: $new_topic_folder"
     else
       mm_dir="$MEETING_MINUTES_DIR"
     fi
   else
+    if [[ -n "$selection" ]]; then
+      msg_warn "Invalid selection '$selection'. Using root meeting-minutes/."
+    fi
     mm_dir="$MEETING_MINUTES_DIR"
   fi
 
@@ -355,7 +407,7 @@ add_meeting_minutes() {
   filename="${date}-${slug}.md"
   filepath="$mm_dir/$filename"
 
-  [[ ! -e "$filepath" ]] || { echo "File already exists: $filepath"; exit 1; }
+  [[ ! -e "$filepath" ]] || { msg_error "File already exists: $filepath"; exit 1; }
 
   cat >"$filepath" <<EOF
 # Meeting Minutes: $name
@@ -388,30 +440,30 @@ add_meeting_minutes() {
 - 
 EOF
 
-  echo "Created meeting minutes: $filepath"
+  msg_ok "Created meeting minutes: $filepath"
 }
 
 archive_topic() {
   local topic="${1:-}"
-  [[ -n "$topic" ]] || { echo "Usage: tt archive topic <topic-folder>"; exit 1; }
+  [[ -n "$topic" ]] || { msg_error "Usage: tt archive topic <topic-folder>"; exit 1; }
 
   local src="$TOPICS_DIR/$topic"
   local dst="$ARCHIVE_DIR/$topic"
 
-  [[ -d "$src" ]] || { echo "Topic not found: $src"; exit 1; }
+  [[ -d "$src" ]] || { msg_error "Topic not found: $src"; exit 1; }
   mkdir -p "$ARCHIVE_DIR"
-  [[ ! -e "$dst" ]] || { echo "Archive target already exists: $dst"; exit 1; }
+  [[ ! -e "$dst" ]] || { msg_error "Archive target already exists: $dst"; exit 1; }
 
   mv "$src" "$dst"
-  echo "Archived topic: $topic"
+  msg_ok "Archived topic: $topic"
 }
 
 apply_changes() {
   cd "$ROOT"
   git add -A
-  git commit -m "Update: tasks and topics" || { echo "Nothing to commit"; exit 0; }
-  git push || { echo "Failed to push"; exit 1; }
-  echo "✅ Changes committed and pushed"
+  git commit -m "Update: tasks and topics" || { msg_info "Nothing to commit"; exit 0; }
+  git push || { msg_error "Failed to push"; exit 1; }
+  msg_ok "Changes committed and pushed"
 }
 
 main() {
