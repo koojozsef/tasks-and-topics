@@ -107,3 +107,7 @@ Output:
 2. [Medium] this is related to the **job topic** - [Related: 2026-06-23-job-stuffs](../topics/2026-06-23-job-stuffs/index.md)
 3. [Medium] do the job
 ```
+
+```bash
+tt log  # adds a worklog entry for today
+```

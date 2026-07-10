@@ -50,6 +50,7 @@ usage() {
   printf "  tt ls tasks\n"
   printf "  tt ls topics\n"
   printf "  tt done <task-number>\n"
+  printf "  tt log [topic-folder]\n"
   printf "  tt archive topic <topic-folder>\n"
   printf "  tt mm [\"meeting title\"]\n"
   printf "  tt apply\n"
@@ -458,6 +459,69 @@ archive_topic() {
   msg_ok "Archived topic: $topic"
 }
 
+add_worklog_entry() {
+  local topic="${1:-}"
+  
+  # If no topic specified, prompt for selection
+  if [[ -z "$topic" ]]; then
+    section "Select Topic for Worklog"
+    
+    local -a topics
+    mapfile -t topics < <(find "$TOPICS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name template -printf '%f\n' | sort -r | head -8)
+    
+    if [[ ${#topics[@]} -eq 0 ]]; then
+      msg_error "No topics found. Create one first with: tt add topic \"name\""
+      exit 1
+    fi
+    
+    for i in "${!topics[@]}"; do
+      printf "  %b\n" "${DIM}$((i+1)))${RESET} ${topics[$i]}"
+    done
+    printf "\n"
+    
+    local selection
+    read -r -p "Select topic [1-${#topics[@]}]: " selection
+    
+    if ! [[ "$selection" =~ ^[0-9]+$ ]] || [[ "$selection" -lt 1 ]] || [[ "$selection" -gt ${#topics[@]} ]]; then
+      msg_error "Invalid selection: $selection"
+      exit 1
+    fi
+    
+    topic="${topics[$((selection-1))]}"
+  fi
+  
+  local topic_dir="$TOPICS_DIR/$topic"
+  [[ -d "$topic_dir" ]] || { msg_error "Topic not found: $topic_dir"; exit 1; }
+  
+  local worklog_file="$topic_dir/worklog.md"
+  local date
+  date="$(date +%F)"
+  local date_heading="## $date"
+  
+  # Create or update worklog file
+  if [[ ! -f "$worklog_file" ]]; then
+    cat >"$worklog_file" <<EOF
+# Worklog: $topic
+
+---
+
+$date_heading
+
+- 
+EOF
+    msg_ok "Created worklog: $worklog_file"
+  else
+    # Check if date heading already exists
+    if ! grep -q "^$date_heading\$" "$worklog_file"; then
+      # Add date heading at the end
+      printf "\n%s\n\n- \n" "$date_heading" >> "$worklog_file"
+      msg_ok "Added worklog entry for $date here: $worklog_file"
+    else
+      msg_info "Worklog entry for $date already exists here: $worklog_file"
+    fi
+  fi
+}
+
 apply_changes() {
   cd "$ROOT"
   git add -A
@@ -494,6 +558,9 @@ main() {
       ;;
     done)
       done_task "$@"
+      ;;
+    log)
+      add_worklog_entry "$@"
       ;;
     mm)
       add_meeting_minutes "$@"
