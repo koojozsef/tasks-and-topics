@@ -77,10 +77,12 @@ In the board:
   predecessors are done, then it flips to readyToStart automatically —
   you only ever mark a task done, never its ready/blocked state directly.
 - **Double-click** empty canvas to add a task with no predecessors.
-- **Right-click** an arrow to insert a new task on that dependency.
-- Click a task, then **"Link… (add a predecessor)"**, then click the task
-  that should precede it, to draw a dependency (rejected if it would
-  create a cycle).
+- **Drag** from one task's box and drop it on another to draw a
+  dependency — the task you drop *on* depends on the task you dragged
+  *from* (rejected if it would create a cycle). A plain click (no drag)
+  just selects the task.
+- **Click** an arrow to remove that dependency; **right-click** an arrow
+  to insert a new task on it.
 - Click a task to open its panel: edit its text, toggle done (disabled
   while blocked), or delete it — **bridging** the chain (its predecessors
   connect directly to its successors) or **cutting** it (edges just
@@ -89,10 +91,13 @@ In the board:
   sidebar to show/hide lanes. A task with no topic lives in "(no topic)".
 
 `tt board import` pulls existing checklist items from `tasks/active.md`,
-every `topics/*/index.md`, and `tasks/done.md` onto the board as
-freestanding tasks (tagged with their topic, no dependencies guessed) —
-safe to re-run any time, it only ever adds items it hasn't seen before.
-There's also an "Import" button in the toolbar that does the same thing.
+every `topics/*/index.md`, `tasks/done.md`, and every `topics/*/worklog.md`
+onto the board as freestanding tasks (tagged with their topic, no
+dependencies guessed) — safe to re-run any time, it only ever adds items it
+hasn't seen before. Worklog entries have no checkbox in the source file, so
+each one imports as already **done** (a worklog is a record of work that
+happened). There's also an "Import" button in the toolbar that does the
+same thing.
 
 The whole board is scriptable, mirroring the GUI:
 

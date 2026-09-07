@@ -1,13 +1,17 @@
 # Visual Planner — Design Plan
 
-Status: implemented (v1). This document specs a visual, dependency-graph
-planner that complements `tt` without disturbing its existing commands or
-files. `tt board` is live — see `scripts/board_lib.py`,
-`scripts/board_server.py`, and `static/`. §6 and §7 note the one deliberate
-deviation from the original proposal (a hand-rolled SVG frontend instead of
-a vendored Cytoscape.js, since this environment had no network access to
-fetch one) and §11/§12 are left as-is for history; open questions there
-were resolved as documented inline rather than re-asked.
+Status: implemented (v1, since revised). This document specs a visual,
+dependency-graph planner that complements `tt` without disturbing its
+existing commands or files. `tt board` is live — see
+`scripts/board_lib.py`, `scripts/board_server.py`, and `static/`. §6 and §7
+note the one deliberate deviation from the original proposal (a hand-rolled
+SVG frontend instead of a vendored Cytoscape.js, since this environment had
+no network access to fetch one) and §11/§12 are left as-is for history;
+open questions there were resolved as documented inline rather than
+re-asked. Since v1: dependencies are now drawn by dragging one task onto
+another (§7) rather than a click-based "link mode", edges can be removed
+with a click (§7), and import (§4) also pulls done, already-logged work out
+of each topic's `worklog.md`.
 
 ## 1. Goal
 
@@ -111,6 +115,13 @@ written back to), idempotent, re-runnable at any time: `tt board import`.
    finished work is visible on the board too instead of only ever seeding
    the "already imported" dedup set. `tt board import --skip-done` opts
    out for a leaner board.
+4. `topics/*/worklog.md`, also gated by `--skip-done`. Worklog entries
+   (written by `tt log`) are plain `- ` bullets, not checklist items —
+   `tt log` never writes a checkbox — so each bullet is imported as an
+   already-**done** task (a worklog entry is, by construction, a record of
+   work that happened), tagged with that topic. A bullet the user hand-
+   edited into a `- [ ]`/`- [x]` checklist item is still honored as
+   written, checkbox and all.
 
 **Mapping into `board.md`:**
 
@@ -227,14 +238,23 @@ Browser (Simple Browser in VS Code, or any local browser) ─▶ http://127.0.0.
   text and splices it into that edge — `a -> b` becomes `a -> new -> b`
   (new task inherits the position in the chain; `a`'s original successor
   is now gated behind the new task too). `POST /api/board/splice`.
-- **Draw a dependency**: as implemented, a click-based "link mode" rather
-  than a drag gesture (simpler to build without a graph library and just
-  as discoverable): select a task, click its "Link… (add a predecessor)"
-  button, then click the task that should precede it (Esc cancels).
-  Rejected server-side (with the reason shown to the user) if it would:
+- **Draw a dependency (drag and drop)**: press on a task box and drag onto
+  another task box; releasing over it makes the *dropped-on* task depend on
+  the task you *dragged from* — same direction as the rendered arrows, so
+  the gesture reads the same way the result looks. A dashed highlight
+  tracks the box currently under the pointer as a live drop-target
+  preview, and a dashed line follows the cursor from the source box. A
+  press that never moves past a small threshold is just a click (selects
+  the task, opens the inspector) — dragging and clicking share one
+  `mousedown` handler disambiguated by movement distance. Esc cancels an
+  in-progress drag. Rejected server-side (with the reason shown to the
+  user) if it would:
   - create a self-loop,
   - create a cycle (DAG check via graph reachability before accepting),
   - duplicate an existing edge.
+- **Remove a dependency**: click an arrow (with confirmation) to remove
+  that edge outright — the complement to drawing one by drag, and to
+  right-click-to-splice on the same arrow.
 - **Delete a task**: a confirm dialog, then one of two buttons:
   1. *Delete (bridge chain)* (recommended default) — task's predecessors
      become direct predecessors of its successors, preserving the rest of
@@ -243,9 +263,9 @@ Browser (Simple Browser in VS Code, or any local browser) ─▶ http://127.0.0.
      reconnection.
 - **Layout**: boxes auto-arrange by dependency rank (column) and swimlane
   (row) on every load — deterministic, so per §3 no position is persisted.
-  Manual dragging is not implemented in v1 (see §6's note on the frontend
-  deviation) — a possible v2 addition alongside persisted manual layout,
-  see §10.
+  Dragging a task is reserved for drawing a dependency (above), not for
+  repositioning it; persisted manual layout remains a possible v2, see
+  §10.
 - **Rename / edit text**: click a box's text to edit inline.
 - **Swimlanes**: every distinct topic present among the board's tasks (via
   the `#topic:` tag from §3/§4) renders as its own horizontal band, labeled

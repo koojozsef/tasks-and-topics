@@ -21,10 +21,13 @@
   const linkHint = document.getElementById("linkHint");
   const inspector = document.getElementById("inspector");
 
+  const DRAG_THRESHOLD = 6; // px, in SVG user units (1:1 with screen px here)
+
   let state = { tasks: [], topics: [] };
   let hiddenLanes = loadHiddenLanes();
   let selectedId = null;
-  let pendingLinkSucc = null; // when set, next node click becomes its predecessor
+  let lastPositions = new Map(); // taskId -> {x,y} from the last render, for drag hit-testing
+  let dragState = null; // { sourceId, startX, startY, dragging, targetId, tempLine }
 
   function loadHiddenLanes() {
     try {
@@ -212,6 +215,8 @@
     const visibleTasks = state.tasks.filter((t) => positions.has(t.id));
     const visibleIds = new Set(visibleTasks.map((t) => t.id));
 
+    lastPositions = positions;
+
     // edges (only when both endpoints are visible)
     for (const t of visibleTasks) {
       for (const p of t.preds) {
@@ -229,6 +234,7 @@
           e.preventDefault();
           spliceOnEdge(p, t.id);
         });
+        path.addEventListener("click", () => unlinkEdge(p, t.id));
       }
     }
 
@@ -238,13 +244,12 @@
       const g = el("g", { transform: `translate(${pos.x},${pos.y})`, "data-id": t.id }, nodesLayer);
       const classes = ["node-box", t.state];
       if (t.id === selectedId) classes.push("selected");
-      if (pendingLinkSucc && t.id !== pendingLinkSucc) classes.push("link-target");
       const rect = el("rect", { class: classes.join(" "), width: NODE_W, height: NODE_H }, g);
       el("text", { class: "node-text", x: 8, y: 18 }, g).textContent = `${t.id}${t.done ? " ✓" : ""}`;
       const label = el("text", { class: "node-text", x: 8, y: 36 }, g);
       label.textContent = truncate(t.text, 28);
       el("title", {}, g).textContent = `${t.text}\nstate: ${t.state}`;
-      rect.addEventListener("click", () => onNodeClick(t.id));
+      rect.addEventListener("mousedown", (e) => onNodeMouseDown(t.id, e));
     }
   }
 
@@ -270,32 +275,103 @@
   }
 
   function onNodeClick(id) {
-    if (pendingLinkSucc) {
-      if (id === pendingLinkSucc) {
-        cancelLinkMode();
-        return;
-      }
-      const succ = pendingLinkSucc;
-      cancelLinkMode();
-      api("link", { pred: id, succ })
-        .then((data) => applyBoardState(data, `Linked ${id} -> ${succ}`))
-        .catch((e) => setStatus(e.message, true));
-      return;
-    }
     selectedId = id;
     render();
     renderInspector();
   }
 
-  function cancelLinkMode() {
-    pendingLinkSucc = null;
+  // --- drag-and-drop dependency drawing -----------------------------------
+  // Press on a task and drag onto another task to make the dropped-on task
+  // depend on the one you dragged from (an arrow, drawn the same direction
+  // as the rendered dependency arrows). A press that never moves past the
+  // threshold is treated as a plain click (select the task).
+
+  function svgPoint(clientX, clientY) {
+    const rect = svg.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  function hitTestNode(x, y, excludeId) {
+    for (const [id, pos] of lastPositions) {
+      if (id === excludeId) continue;
+      if (x >= pos.x && x <= pos.x + NODE_W && y >= pos.y && y <= pos.y + NODE_H) return id;
+    }
+    return null;
+  }
+
+  function onNodeMouseDown(id, evt) {
+    if (evt.button !== 0) return;
+    evt.preventDefault();
+    const p = svgPoint(evt.clientX, evt.clientY);
+    dragState = { sourceId: id, startX: p.x, startY: p.y, dragging: false, targetId: null, tempLine: null };
+    document.addEventListener("mousemove", onDragMove);
+    document.addEventListener("mouseup", onDragUp);
+  }
+
+  function onDragMove(evt) {
+    if (!dragState) return;
+    const p = svgPoint(evt.clientX, evt.clientY);
+    if (!dragState.dragging) {
+      const dist = Math.hypot(p.x - dragState.startX, p.y - dragState.startY);
+      if (dist < DRAG_THRESHOLD) return;
+      dragState.dragging = true;
+      linkHint.hidden = false;
+      linkHint.textContent = "Drop on the task this should lead to… (Esc to cancel)";
+      const src = lastPositions.get(dragState.sourceId);
+      dragState.tempLine = el("line", {
+        class: "drag-line",
+        x1: src.x + NODE_W / 2, y1: src.y + NODE_H / 2,
+        x2: p.x, y2: p.y,
+      }, svg);
+    }
+    dragState.tempLine.setAttribute("x2", p.x);
+    dragState.tempLine.setAttribute("y2", p.y);
+    const target = hitTestNode(p.x, p.y, dragState.sourceId);
+    dragState.targetId = target;
+    nodesLayer.querySelectorAll(".node-box.drop-target").forEach((n) => n.classList.remove("drop-target"));
+    if (target) {
+      const g = nodesLayer.querySelector(`g[data-id="${target}"] rect`);
+      if (g) g.classList.add("drop-target");
+    }
+  }
+
+  function endDrag() {
+    document.removeEventListener("mousemove", onDragMove);
+    document.removeEventListener("mouseup", onDragUp);
+    if (dragState && dragState.tempLine) dragState.tempLine.remove();
     linkHint.hidden = true;
-    render();
+    nodesLayer.querySelectorAll(".node-box.drop-target").forEach((n) => n.classList.remove("drop-target"));
+  }
+
+  function onDragUp() {
+    if (!dragState) return;
+    const { sourceId, dragging, targetId } = dragState;
+    endDrag();
+    dragState = null;
+    if (!dragging) {
+      onNodeClick(sourceId);
+      return;
+    }
+    if (targetId) {
+      api("link", { pred: sourceId, succ: targetId })
+        .then((data) => applyBoardState(data, `Linked ${sourceId} -> ${targetId}`))
+        .catch((e) => setStatus(e.message, true));
+    }
   }
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && pendingLinkSucc) cancelLinkMode();
+    if (e.key === "Escape" && dragState) {
+      endDrag();
+      dragState = null;
+    }
   });
+
+  function unlinkEdge(pred, succ) {
+    if (!confirm(`Remove the dependency ${pred} -> ${succ}?`)) return;
+    api("unlink", { pred, succ })
+      .then((data) => applyBoardState(data, "Removed dependency"))
+      .catch((e) => setStatus(e.message, true));
+  }
 
   function closeInspector() {
     selectedId = null;
@@ -355,13 +431,6 @@
         setStatus(err.message, true);
         e.target.checked = t.done;
       });
-  });
-
-  document.getElementById("inspLink").addEventListener("click", () => {
-    if (!selectedId) return;
-    pendingLinkSucc = selectedId;
-    linkHint.hidden = false;
-    render();
   });
 
   document.getElementById("inspDeleteBridge").addEventListener("click", () => {

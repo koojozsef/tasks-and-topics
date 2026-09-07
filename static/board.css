@@ -94,7 +94,9 @@ button:hover { background: #f0f0ee; }
 .node-box.done { fill: var(--done-bg); stroke: var(--done); }
 .node-box.blocked { fill: var(--blocked-bg); stroke: var(--blocked); }
 .node-box.selected { stroke-width: 3px; }
-.node-box.link-target { stroke-dasharray: 4 3; }
+.node-box.drop-target { stroke-width: 3px; stroke: var(--accent); stroke-dasharray: 4 3; }
+
+.drag-line { stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 5 4; pointer-events: none; }
 
 .node-text {
   font-size: 12px;

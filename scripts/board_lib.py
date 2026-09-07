@@ -255,6 +255,28 @@ def _checklist_items(path):
             yield m.group("text"), m.group("mark").lower() == "x"
 
 
+def _worklog_items(path):
+    """Yield (text, done) for every '- ' bullet in a tt worklog.md file.
+
+    Worklog entries are plain bullets (tt's `tt log` never writes a
+    checkbox) — each logged entry is treated as already-done work. A
+    hand-added '- [ ]'/'- [x]' bullet is still honored if present.
+    """
+    p = Path(path)
+    if not p.exists():
+        return
+    item_re = re.compile(r"^- (?:\[(?P<mark>[ xX])\]\s+)?(?P<text>.+)$")
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        m = item_re.match(line)
+        if not m or not m.group("text").strip():
+            continue
+        done = True if m.group("mark") is None else m.group("mark").lower() == "x"
+        yield m.group("text"), done
+
+
 def import_active(root):
     items = []
     for text, done in _checklist_items(Path(root) / "tasks" / "active.md"):
@@ -272,6 +294,19 @@ def import_topics(root):
         if not topic_dir.is_dir() or topic_dir.name == "template":
             continue
         for text, done in _checklist_items(topic_dir / "index.md"):
+            items.append((text.strip(), topic_dir.name, done))
+    return items
+
+
+def import_worklogs(root):
+    items = []
+    topics_dir = Path(root) / "topics"
+    if not topics_dir.is_dir():
+        return items
+    for topic_dir in sorted(topics_dir.iterdir()):
+        if not topic_dir.is_dir() or topic_dir.name == "template":
+            continue
+        for text, done in _worklog_items(topic_dir / "worklog.md"):
             items.append((text.strip(), topic_dir.name, done))
     return items
 
@@ -295,6 +330,7 @@ def import_all(root, board_path, topics_only=False, skip_done=False):
     collected.extend(import_topics(root))
     if not skip_done:
         collected.extend(import_done(root))
+        collected.extend(import_worklogs(root))
 
     added = 0
     for text, topic, done in collected:
