@@ -90,14 +90,27 @@ In the board:
 - Tasks are grouped into **swimlanes** by topic; use the checklist in the
   sidebar to show/hide lanes. A task with no topic lives in "(no topic)".
 
-`tt board import` pulls existing checklist items from `tasks/active.md`,
-every `topics/*/index.md`, `tasks/done.md`, and every `topics/*/worklog.md`
-onto the board as freestanding tasks (tagged with their topic, no
-dependencies guessed) — safe to re-run any time, it only ever adds items it
-hasn't seen before. Worklog entries have no checkbox in the source file, so
-each one imports as already **done** (a worklog is a record of work that
-happened). There's also an "Import" button in the toolbar that does the
-same thing.
+**Import runs automatically** — on every GUI page load/refresh, and once
+whenever you run `tt board`/`tt board open` — so hand-edits to your notes
+show up on the board without doing anything extra. It also still exists as
+`tt board import` and as the toolbar's "Import" button, for forcing a sync
+on demand.
+
+Import pulls existing checklist items from `tasks/active.md`, every
+`topics/*/index.md`, `tasks/done.md`, and every `topics/*/worklog.md` onto
+the board as freestanding tasks (tagged with their topic, no dependencies
+guessed) — safe to re-run any time, it only ever adds items it hasn't seen
+before. Worklog entries have no checkbox in the source file, so each one
+imports as already **done** (a worklog is a record of work that happened).
+
+**Done-state syncs both ways for `index.md` and `worklog.md`**: hand-check
+a box in a topic's Key Goals or worklog and the matching board task flips
+done on the next import/refresh; mark a task done (or not) on the board —
+GUI or CLI — and, if a matching line exists in that topic's `index.md` or
+`worklog.md`, it's rewritten to match immediately. `tasks/active.md` isn't
+part of this sync: `tt` never checks an `active.md` line off in place
+(`tt done` moves it to `done.md` instead), so there's no line there to
+sync back to — marking such a task done only ever lives on the board.
 
 The whole board is scriptable, mirroring the GUI:
 

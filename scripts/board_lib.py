@@ -321,29 +321,107 @@ def import_done(root):
 
 
 def import_all(root, board_path, topics_only=False, skip_done=False):
-    tasks = load(board_path)
-    existing_keys = {(t["topic"], t["text"]) for t in tasks}
+    """Pull todos from tasks/topics into board.md (adding anything new).
 
-    collected = []
+    Only topics/*/index.md and topics/*/worklog.md are two-way sync
+    sources: for those, an existing matched task's done-state is
+    reconciled to the source on every call (the source -> board half of
+    the sync; sync_done_to_source() is the board -> source half). Neither
+    tasks/active.md nor tasks/done.md can be written back to in place (tt
+    always moves a line from active.md to done.md rather than checking it
+    off where it stands — see sync_done_to_source), so those two stay
+    one-way "add if new" sources only: reconciling their done-state too
+    would silently revert a task marked done on the board back to
+    not-done on the very next auto-import.
+    """
+    tasks = load(board_path)
+    by_key = {(t["topic"], t["text"]): t for t in tasks}
+
+    add_only = []
+    sync_capable = []
     if not topics_only:
-        collected.extend(import_active(root))
-    collected.extend(import_topics(root))
+        add_only.extend(import_active(root))
+    sync_capable.extend(import_topics(root))
     if not skip_done:
-        collected.extend(import_done(root))
-        collected.extend(import_worklogs(root))
+        add_only.extend(import_done(root))
+        sync_capable.extend(import_worklogs(root))
 
     added = 0
-    for text, topic, done in collected:
+    updated = 0
+
+    def add_if_new(text, topic, done):
+        nonlocal added
         key = (topic, text)
-        if key in existing_keys or not text:
-            continue
+        if key in by_key:
+            return
         task_id = _next_id(tasks)
-        tasks.append({"id": task_id, "text": text, "done": done, "preds": [], "topic": topic})
-        existing_keys.add(key)
+        new_task = {"id": task_id, "text": text, "done": done, "preds": [], "topic": topic}
+        tasks.append(new_task)
+        by_key[key] = new_task
         added += 1
 
+    for text, topic, done in add_only:
+        if text:
+            add_if_new(text, topic, done)
+
+    for text, topic, done in sync_capable:
+        if not text:
+            continue
+        existing = by_key.get((topic, text))
+        if existing is None:
+            add_if_new(text, topic, done)
+        elif existing["done"] != done:
+            existing["done"] = done
+            updated += 1
+
     save(board_path, tasks)
-    return added
+    return added, updated
+
+
+def _rewrite_checklist_line(path, text, done):
+    """Find a '- [ ]'/'- [x]'/bare '- ' line whose item text matches `text`
+    in a markdown file and rewrite its checkbox to reflect `done`. A
+    matched bare bullet (no checkbox at all, e.g. a tt worklog entry) is
+    turned into an explicit '- [ ]'/'- [x]' line. Returns True if a line
+    was changed.
+    """
+    p = Path(path)
+    if not p.exists():
+        return False
+    item_re = re.compile(r"^(?P<prefix>\s*-\s*)(?:\[(?P<mark>[ xX])\]\s*)?(?P<rest>.*)$")
+    lines = p.read_text().splitlines()
+    changed = False
+    for i, line in enumerate(lines):
+        m = item_re.match(line)
+        if not m or m.group("rest").strip() != text.strip():
+            continue
+        mark = "x" if done else " "
+        lines[i] = f"{m.group('prefix')}[{mark}] {m.group('rest').strip()}"
+        changed = True
+        break
+    if changed:
+        p.write_text("\n".join(lines) + "\n")
+    return changed
+
+
+def sync_done_to_source(root, tasks, task_id):
+    """Best-effort write a task's current done flag back to the line it was
+    likely imported from, in its topic's index.md or worklog.md (whichever
+    has a matching line first). A no-op if the task has no topic or no
+    line matches — e.g. a board-native task, or one whose text was edited
+    on the board since import. tasks/active.md is not a sync target: tt
+    never marks a line done in place there (`tt done` moves it to
+    tasks/done.md instead), so there's no in-place line to write back to.
+    """
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task or not task["topic"]:
+        return False
+    topic_dir = Path(root) / "topics" / task["topic"]
+    if _rewrite_checklist_line(topic_dir / "index.md", task["text"], task["done"]):
+        return True
+    if _rewrite_checklist_line(topic_dir / "worklog.md", task["text"], task["done"]):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -392,8 +470,11 @@ def _cmd_done(args):
     path = _board_path(args)
     tasks = load(path)
     set_done(tasks, args.id, not args.undo)
+    synced = sync_done_to_source(args.root, tasks, args.id)
     save(path, tasks)
     print(f"{'Un-marked' if args.undo else 'Marked'} done: {args.id}")
+    if synced:
+        print(f"  also updated its source line under topics/")
 
 
 def _cmd_rm(args):
@@ -418,8 +499,10 @@ def _cmd_ls(args):
 
 
 def _cmd_import(args):
-    added = import_all(args.root, _board_path(args), topics_only=args.topics_only, skip_done=args.skip_done)
-    print(f"Imported {added} new task(s).")
+    added, updated = import_all(
+        args.root, _board_path(args), topics_only=args.topics_only, skip_done=args.skip_done
+    )
+    print(f"Imported {added} new task(s), synced done-state on {updated} existing task(s).")
 
 
 def main(argv=None):

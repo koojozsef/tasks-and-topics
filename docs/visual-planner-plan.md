@@ -1,8 +1,8 @@
 # Visual Planner — Design Plan
 
-Status: implemented (v1, since revised). This document specs a visual,
-dependency-graph planner that complements `tt` without disturbing its
-existing commands or files. `tt board` is live — see
+Status: implemented (v1, since revised twice). This document specs a
+visual, dependency-graph planner that complements `tt` without disturbing
+its existing commands or files. `tt board` is live — see
 `scripts/board_lib.py`, `scripts/board_server.py`, and `static/`. §6 and §7
 note the one deliberate deviation from the original proposal (a hand-rolled
 SVG frontend instead of a vendored Cytoscape.js, since this environment had
@@ -10,8 +10,11 @@ no network access to fetch one) and §11/§12 are left as-is for history;
 open questions there were resolved as documented inline rather than
 re-asked. Since v1: dependencies are now drawn by dragging one task onto
 another (§7) rather than a click-based "link mode", edges can be removed
-with a click (§7), and import (§4) also pulls done, already-logged work out
-of each topic's `worklog.md`.
+with a click (§7), import (§4) also pulls done, already-logged work out of
+each topic's `worklog.md`, done-state now syncs both ways between the
+board and `topics/*/index.md`/`worklog.md` specifically (§4), and import
+now runs automatically — on every GUI load and once at `tt board` startup
+— rather than only on request (§4).
 
 ## 1. Goal
 
@@ -130,25 +133,60 @@ written back to), idempotent, re-runnable at any time: `tt board import`.
   the user draws `<-` dependencies afterward in the GUI. This matches "no
   dates are needed, only dependency" — dependency is planner-native
   information, never inferred from list order.
-- **De-duplication / idempotency**: a board task is matched against source
-  items by the pair `(topic, exact text)`. Anything already present is left
-  completely untouched — done-state, edges, everything — so re-running
-  import to pick up newly-added todos never clobbers board-only edits. Only
-  genuinely new `(topic, text)` pairs are appended as new tasks.
+- **De-duplication**: a board task is matched against source items by the
+  pair `(topic, exact text)`.
   - Known trade-off: editing a task's text on the board afterward breaks
     the match, so a later `tt board import` can't tell it's "the same"
     source item and may re-add it as a duplicate. Acceptable for v1 — the
     fix is deleting the stray duplicate; a content-hash provenance marker
     is listed under deferred work (§10) if this proves annoying.
-- Import never edits `active.md`/topic files — one-way only. Marking a task
-  done on the board does not mark it done at its source, and vice versa;
-  keeping the two in sync both ways is deferred (§10), since `board.md`'s
-  blocked/readyToStart semantics don't exist in the source files at all.
+
+**Two-way done-state sync, for `index.md` and `worklog.md` only:**
+
+- **Source → board**: on every import, a matched task from `topics/*/
+  index.md` or `topics/*/worklog.md` has its done-state *reconciled* to
+  the source — if the source line's checkbox differs from the board
+  task's `done` flag, the board task is updated to match. So hand-checking
+  `- [x]` in a topic's Key Goals or worklog is enough to flip it done on
+  the board too, on the next import.
+- **Board → source**: the reverse direction happens the moment a task is
+  marked (or un-marked) done anywhere — GUI, `POST /api/board/done`, or
+  `tt board done`/`undone` — via `board_lib.sync_done_to_source()`: it
+  looks for a line with matching text in that task's topic's `index.md`,
+  then `worklog.md`, and rewrites its checkbox. A worklog bullet with no
+  checkbox at all (the normal `tt log` shape) is turned into an explicit
+  `- [ ]`/`- [x]` line the first time it's touched this way. A task with
+  no match in either file (board-native, or text edited since import) is
+  left alone — best-effort, not an error.
+- **`tasks/active.md` and `tasks/done.md` are deliberately excluded** from
+  this reconciliation, and stay one-way "add if new" sources only. `tt`
+  never checks a box in place in `active.md` — `tt done` *moves* the line
+  to `done.md` instead — so there is no in-place line to sync either
+  direction for those two files. Early testing surfaced exactly the bug
+  this guards against: reconciling *every* source's done-state, active.md
+  included, meant marking an active.md-sourced task done on the board got
+  silently reverted back to not-done on the very next auto-import (below),
+  since active.md's own `[ ]` never changes. Scoping reconciliation to
+  only the two files that can actually be written back to fixes that.
+
+**Import now runs automatically**, not just via the CLI/toolbar button:
+
+- On every GUI page load/refresh (`GET /api/board`), before the state is
+  returned — so hand-edits to `tasks/`/`topics/` since the last load show
+  up without the user having to click "Import".
+- Once at `tt board` (`board_server.py` startup), before the server even
+  starts listening — so `board.md` is caught up the moment the command is
+  run, even if the user never opens the browser (e.g. they only run
+  `tt board ls` against it from another terminal).
+- The manual `tt board import` CLI command and the toolbar "Import"
+  button still exist and do the same full scan — useful to force a sync
+  without waiting for a refresh, or to pass `--topics-only`/`--skip-done`.
 
 **CLI:**
 
 ```
-tt board import                # scan tasks/ + topics/, add anything new
+tt board import                # scan tasks/ + topics/, add anything new,
+                                # and sync done-state for index.md/worklog.md
 tt board import --topics-only  # skip tasks/active.md
 tt board import --skip-done    # skip tasks/done.md
 ```
@@ -320,9 +358,12 @@ file format, the state-derivation rules, and the import logic.
 
 ## 9. Relationship to existing `tt` data
 
-- Additive: no changes to `active.md`, `done.md`, topic `index.md` files,
-  or any existing command. Import (§4) only *reads* those files; it never
-  writes to them.
+- Additive to `tt` itself: no changes to any existing command, and
+  `active.md`/`done.md` are read-only as far as the board is concerned.
+  `topics/*/index.md` and `topics/*/worklog.md` are the exception — the
+  two-way done-state sync (§4) does write back to them (flipping a
+  checkbox to match the board, or turning a bare worklog bullet into an
+  explicit one) when a matching line is found there.
 - `board.md` lives at repo root next to `tasks/`/`topics/`. A single global
   board (rather than one `board.md` per topic) is now the clear choice for
   v1 given swimlanes (§7): swimlanes already give per-topic grouping and
@@ -345,10 +386,12 @@ file format, the state-derivation rules, and the import logic.
   practice.
 - **Persisted manual layout** (store `{x,y}` per task) if auto-layout proves
   insufficient for large boards.
-- **Two-way done-state sync** between `board.md` and `active.md`/topic
-  files (e.g. marking a task done on the board also checks it off in
-  `active.md`). Import (§4) is intentionally one-way for v1; revisit if
-  keeping both views current by hand becomes annoying.
+- **Two-way done-state sync for `tasks/active.md`**: still deliberately
+  out of scope (§4) — `tt` has no notion of checking an `active.md` line
+  off in place (`tt done` moves it to `done.md`), so syncing a board task
+  done would mean replicating that move, not just flipping a checkbox.
+  `index.md`/`worklog.md` sync is implemented; this would need its own
+  design if wanted.
 - **Robust re-import matching** via a stored content-hash/provenance marker
   per imported task, instead of the `(topic, text)` match in §4, if editing
   task text on the board turns out to cause frequent duplicate re-imports

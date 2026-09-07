@@ -76,6 +76,11 @@ def make_handler(board_path, notes_root):
 
         def do_GET(self):
             if self.path == "/api/board":
+                # Auto-import on every GUI load/refresh: pulls in anything
+                # added by hand to tasks/topics since the last load, and
+                # reconciles done-state both ways (see board_lib.import_all
+                # and sync_done_to_source).
+                board_lib.import_all(notes_root, board_path)
                 self._send_json(200, self._board_state())
                 return
             entry = STATIC_FILES.get(self.path)
@@ -101,6 +106,7 @@ def make_handler(board_path, notes_root):
                     board_lib.unlink(tasks, body["pred"], body["succ"])
                 elif action == "done":
                     board_lib.set_done(tasks, body["id"], bool(body.get("done", True)))
+                    board_lib.sync_done_to_source(notes_root, tasks, body["id"])
                 elif action == "rename":
                     board_lib.rename(tasks, body["id"], body.get("text", ""))
                 elif action == "delete":
@@ -155,6 +161,7 @@ def main():
     board_path = Path(args.board).resolve() if args.board else notes_root / "board.md"
     if not board_path.exists():
         board_lib.save(board_path, [])
+    board_lib.import_all(notes_root, board_path)  # auto-import on `tt board`
 
     httpd = serve(notes_root, board_path, args.port)
     host, port = httpd.server_address
