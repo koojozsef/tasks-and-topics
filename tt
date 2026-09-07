@@ -9,6 +9,12 @@ MEETING_MINUTES_DIR="$ROOT/meeting-minutes"
 ACTIVE_FILE="$TASKS_DIR/active.md"
 TEMPLATE_FILE="$TOPICS_DIR/template/index.md"
 
+# Where tt itself lives (following symlinks), so `tt board` can find its
+# helper scripts regardless of the notes folder tt was invoked from.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+BOARD_LIB="$SCRIPT_DIR/scripts/board_lib.py"
+BOARD_SERVER="$SCRIPT_DIR/scripts/board_server.py"
+
 # Terminal styling (falls back to plain text when colors are unsupported).
 RESET=""
 BOLD=""
@@ -54,6 +60,16 @@ usage() {
   printf "  tt archive topic <topic-folder>\n"
   printf "  tt mm [\"meeting title\"]\n"
   printf "  tt apply\n"
+  printf "  tt board [open]\n"
+  printf "  tt board init\n"
+  printf "  tt board add \"task text\" [--topic <topic-folder>]\n"
+  printf "  tt board link <pred-id> <succ-id>\n"
+  printf "  tt board unlink <pred-id> <succ-id>\n"
+  printf "  tt board done <id>\n"
+  printf "  tt board undone <id>\n"
+  printf "  tt board rm <id> [--cut]\n"
+  printf "  tt board ls\n"
+  printf "  tt board import [--topics-only] [--skip-done]\n"
   printf "  tt help\n"
 }
 
@@ -522,6 +538,83 @@ EOF
   fi
 }
 
+board_require_python() {
+  command -v python3 >/dev/null 2>&1 || {
+    msg_error "tt board requires python3 on PATH (used only for the board; every other tt command stays pure bash)."
+    exit 1
+  }
+}
+
+board_lib_run() {
+  board_require_python
+  [[ -f "$BOARD_LIB" ]] || { msg_error "Board library not found: $BOARD_LIB"; exit 1; }
+  python3 "$BOARD_LIB" --root "$ROOT" "$@"
+}
+
+board_open_browser() {
+  local url="$1"
+  if command -v wslview >/dev/null 2>&1; then
+    wslview "$url" >/dev/null 2>&1 &
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 &
+  else
+    msg_info "Open this URL in your browser (or VS Code's Simple Browser): $url"
+  fi
+}
+
+board_open() {
+  board_require_python
+  [[ -f "$BOARD_SERVER" ]] || { msg_error "Board server not found: $BOARD_SERVER"; exit 1; }
+
+  local logfile
+  logfile="$(mktemp)"
+  python3 "$BOARD_SERVER" --root "$ROOT" >"$logfile" 2>&1 &
+  local server_pid=$!
+  trap 'kill "${server_pid:-}" 2>/dev/null; rm -f "${logfile:-}"' EXIT INT TERM
+
+  local url="" i
+  for i in $(seq 1 50); do
+    url="$(head -n1 "$logfile" 2>/dev/null || true)"
+    [[ -n "$url" ]] && break
+    kill -0 "$server_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+
+  if [[ -z "$url" ]]; then
+    msg_error "Board server failed to start:"
+    cat "$logfile" >&2
+    exit 1
+  fi
+
+  msg_ok "Board server running: $url"
+  msg_info "Press Ctrl+C to stop."
+  board_open_browser "$url"
+  wait "$server_pid"
+}
+
+board_dispatch() {
+  local sub="${1:-open}"
+  [[ $# -gt 0 ]] && shift
+
+  case "$sub" in
+    open) board_open ;;
+    init) board_lib_run init ;;
+    add) board_lib_run add "$@" ;;
+    link) board_lib_run link "$@" ;;
+    unlink) board_lib_run unlink "$@" ;;
+    done) board_lib_run done "$@" ;;
+    undone) board_lib_run done --undo "$@" ;;
+    rm) board_lib_run rm "$@" ;;
+    ls) board_lib_run ls ;;
+    import) board_lib_run import "$@" ;;
+    *)
+      msg_error "Unknown board subcommand: $sub"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
 apply_changes() {
   cd "$ROOT"
   git add -A
@@ -572,6 +665,9 @@ main() {
       ;;
     apply)
       apply_changes
+      ;;
+    board)
+      board_dispatch "$@"
       ;;
     help|-h|--help)
       usage

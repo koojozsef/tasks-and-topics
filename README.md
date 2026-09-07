@@ -38,6 +38,7 @@ tt ls topics
 tt done 2
 tt mm "weekly sync"
 tt archive topic 2026-06-22-job-stuffs
+tt board
 tt help
 ```
 
@@ -51,6 +52,89 @@ tt help
 - `tt done N`: marks the Nth open task as done.
 - `tt mm ["meeting title"]`: creates a meeting minutes file. You can select an existing topic, create a new topic, or save into root `meeting-minutes/`.
 - `tt archive topic NAME`: moves a topic from `topics/` to `archive/`.
+- `tt board`: opens the visual planner (see below).
+
+## tt board
+
+A visual dependency-graph planner for your tasks, on top of a new
+`board.md` file — boxes for tasks, arrows for "must finish before". See
+[`docs/visual-planner-plan.md`](docs/visual-planner-plan.md) for the full
+design.
+
+Run `tt board` (or `tt board open`) from your notes folder. It starts a
+small local server, prints a `http://127.0.0.1:<port>` URL, and tries to
+open it in a browser (`wslview` on WSL, `xdg-open` on Linux). If neither is
+available, open the printed URL yourself — or paste it into VS Code's
+**Simple Browser** (`Ctrl+Shift+P` → "Simple Browser: Show") to keep it
+next to your notes. Requires `python3` on `PATH` (used only for `tt
+board`; every other `tt` command stays pure bash); press `Ctrl+C` to stop
+the server.
+
+In the board:
+
+- Every task is a box, colored by state: grey = **blocked**, blue =
+  **readyToStart**, green = **done**. A task is blocked until *all* of its
+  predecessors are done, then it flips to readyToStart automatically —
+  you only ever mark a task done, never its ready/blocked state directly.
+- **Double-click** empty canvas to add a task with no predecessors.
+- **Drag** from one task's box and drop it on another to draw a
+  dependency — the task you drop *on* depends on the task you dragged
+  *from* (rejected if it would create a cycle). A plain click (no drag)
+  just selects the task.
+- **Click** an arrow to remove that dependency; **right-click** an arrow
+  to insert a new task on it.
+- Click a task to open its panel: edit its text, toggle done (disabled
+  while blocked), or delete it — **bridging** the chain (its predecessors
+  connect directly to its successors) or **cutting** it (edges just
+  removed).
+- Each task's left edge is striped with a color for its **topic**; use the
+  swimlane checklist in the sidebar to show/hide tasks by topic. A task
+  with no topic lives under "(no topic)". Boxes are arranged by dependency
+  depth left-to-right and packed vertically to keep arrows short and
+  legible — not stacked into a full-height band per topic — so hiding a
+  topic tightens up the board instead of just blanking a row.
+- Arrows never end up hidden behind a box: one that would otherwise cut
+  straight through unrelated tasks (skipping several dependency layers at
+  once) is routed as a dashed arc above the board instead.
+
+**Import runs automatically** — on every GUI page load/refresh, and once
+whenever you run `tt board`/`tt board open` — so hand-edits to your notes
+show up on the board without doing anything extra. It also still exists as
+`tt board import` and as the toolbar's "Import" button, for forcing a sync
+on demand.
+
+Import pulls existing checklist items from `tasks/active.md`, every
+`topics/*/index.md`, `tasks/done.md`, and every `topics/*/worklog.md` onto
+the board as freestanding tasks (tagged with their topic, no dependencies
+guessed) — safe to re-run any time, it only ever adds items it hasn't seen
+before. Worklog entries have no checkbox in the source file, so each one
+imports as already **done** (a worklog is a record of work that happened).
+
+**Done-state syncs both ways for `index.md` and `worklog.md`**: hand-check
+a box in a topic's Key Goals or worklog and the matching board task flips
+done on the next import/refresh; mark a task done (or not) on the board —
+GUI or CLI — and, if a matching line exists in that topic's `index.md` or
+`worklog.md`, it's rewritten to match immediately. `tasks/active.md` isn't
+part of this sync: `tt` never checks an `active.md` line off in place
+(`tt done` moves it to `done.md` instead), so there's no line there to
+sync back to — marking such a task done only ever lives on the board.
+
+The whole board is scriptable, mirroring the GUI:
+
+```bash
+tt board init                  # create an empty board.md
+tt board add "Write the design doc" --topic 2026-06-23-job-stuffs
+tt board link t1 t2            # t2 now depends on t1
+tt board unlink t1 t2
+tt board done t1                # rejected if t1 is blocked
+tt board undone t1
+tt board rm t1 --cut           # default is to bridge the chain
+tt board ls                    # id, computed state, text
+tt board import --skip-done    # or --topics-only
+```
+
+`board.md` is plain text (`git diff`-friendly) and is picked up by `tt
+apply` like everything else in the notes folder.
 
 ### Meeting minutes behavior
 
