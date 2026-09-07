@@ -1,6 +1,6 @@
 # Visual Planner — Design Plan
 
-Status: implemented (v1, since revised twice). This document specs a
+Status: implemented (v1, since revised three times). This document specs a
 visual, dependency-graph planner that complements `tt` without disturbing
 its existing commands or files. `tt board` is live — see
 `scripts/board_lib.py`, `scripts/board_server.py`, and `static/`. §6 and §7
@@ -12,9 +12,14 @@ re-asked. Since v1: dependencies are now drawn by dragging one task onto
 another (§7) rather than a click-based "link mode", edges can be removed
 with a click (§7), import (§4) also pulls done, already-logged work out of
 each topic's `worklog.md`, done-state now syncs both ways between the
-board and `topics/*/index.md`/`worklog.md` specifically (§4), and import
+board and `topics/*/index.md`/`worklog.md` specifically (§4), import
 now runs automatically — on every GUI load and once at `tt board` startup
-— rather than only on request (§4).
+— rather than only on request (§4), and the layout dropped per-topic
+horizontal swimlane bands entirely in favor of a barycenter-ordered
+layered layout that keeps columns as the dependency-rank grid but chooses
+each task's row to minimize edge length/crossings, with overpass routing
+for edges that skip columns and topic shown as a box stripe instead of a
+band (§7).
 
 ## 1. Goal
 
@@ -299,38 +304,68 @@ Browser (Simple Browser in VS Code, or any local browser) ─▶ http://127.0.0.
      the chain (`a -> x -> b`, delete `x` ⇒ `a -> b`).
   2. *Delete (cut edges)* — just remove the task and all its edges, no
      reconnection.
-- **Layout**: boxes auto-arrange by dependency rank (column) and swimlane
-  (row) on every load — deterministic, so per §3 no position is persisted.
-  Dragging a task is reserved for drawing a dependency (above), not for
-  repositioning it; persisted manual layout remains a possible v2, see
-  §10.
+- **Layout (revised from the original per-swimlane-band design)**: columns
+  are strictly the dependency rank (longest path from a root) — the
+  "horizontal alignment grid" showing how many dependency layers deep a
+  task is, computed over the *full* graph so columns don't shift as
+  swimlanes are toggled. Rows are **not** grouped by topic into bands
+  anymore — that produced long, frequently-crossing arrows whenever a
+  dependency crossed topics (the common case here, since most tasks either
+  have no topic or link across them). Instead each column's row order is
+  chosen by a barycenter/median heuristic (a standard layered-graph-
+  drawing technique, see e.g. the Sugiyama method): a task's row tends
+  toward the average row of the neighbors that connect to it, computed in
+  a forward pass (by predecessors) then a backward refinement pass (by
+  successors) then one more forward pass to settle. Net effect: shorter
+  edges, far fewer crossings, and a compact board instead of one that
+  grows a full topic-height band per topic regardless of how few tasks are
+  in it. Layout is still fully deterministic and recomputed on every
+  render, so per §3 no position is persisted; dragging a task is reserved
+  for drawing a dependency (above), not for repositioning it.
+  - **Edges that skip more than one column** (rank gap > 1) would
+    otherwise be drawn as a straight line cutting through the box(es) in
+    the skipped column(s) — genuinely hidden/overlapping content, not just
+    visually busy. Those are routed instead as a dashed "overpass": a wide
+    arc through a reserved headroom strip above row 0, clear of every
+    node. Multiple overpasses are staggered across a few height tiers so
+    they don't all trace the same arc.
+  - **Edges are always drawn on top of (after) node boxes** in paint order
+    (`<g id="nodesLayer">` before `<g id="edgesLayer">` in the SVG), so an
+    arrow that does cross a box's area is still visible, never invisible
+    behind it — the last-resort guarantee behind the overpass routing
+    above.
+  - **Multiple edges touching the same node are fanned out** across a
+    spread of that node's edge (its right side for outgoing edges, left
+    side for incoming), ordered by neighbor row, instead of all converging
+    through dead-center — cuts down edges overlapping each other right at
+    a shared node.
+  - **Each edge's click/right-click target is a separate, wide invisible
+    "hit" path** layered over the thin (1.5px) visible line — a visible
+    line that thin is not a reliable click target on its own; the hit
+    path is what actually carries the click-to-unlink and right-click-to-
+    splice handlers, and its hover state drives the visible line's
+    highlight (via `:has()`).
 - **Rename / edit text**: click a box's text to edit inline.
-- **Swimlanes**: every distinct topic present among the board's tasks (via
-  the `#topic:` tag from §3/§4) renders as its own horizontal band, labeled
-  with that topic's name; tasks with no tag live in an always-present
-  "(no topic)" band. As implemented (§6 — no Cytoscape, so no compound
-  nodes): `board.js` computes each task's dependency rank (longest path
-  from a root) and groups tasks by topic into rows; rank picks the column,
-  swimlane picks the row-band, and the band rectangle + label are drawn
-  directly as SVG behind the nodes.
-- **Swimlane on/off toggle**: a checklist in the sidebar/legend lists every
-  swimlane currently on the board; unchecking one removes that band and
-  all its tasks from the drawing (dependency ranks are still computed over
-  the *full* graph first, so column positions don't jump around as lanes
-  are toggled). An edge is only drawn when *both* of its endpoints are in
-  a visible swimlane, so toggling a lane off can never leave a dangling
-  arrow pointing at a hidden box. This lets a user narrow a big
-  multi-topic board down to just the topics they currently care about,
-  while the underlying dependency graph — which may legitimately cross
-  swimlanes, e.g. a task in one topic blocking a task in another — stays
-  intact in the data regardless of what's currently shown.
+- **Swimlanes, revised**: topic is no longer a row band — it's a colored
+  stripe on the left edge of each box (a small deterministic palette keyed
+  by topic name), so topic identity stays visible without dictating
+  layout. The sidebar's swimlane checklist is unchanged in behavior: every
+  distinct topic present among the board's tasks (via the `#topic:` tag
+  from §3/§4) gets an entry, with a matching color swatch next to its
+  checkbox; tasks with no tag fall under the always-present "(no topic)"
+  entry.
+- **Swimlane on/off toggle**: unchecking a topic in the sidebar removes
+  all of that topic's tasks from the drawing. An edge is only drawn when
+  *both* of its endpoints are currently visible, so hiding a topic can
+  never leave a dangling arrow pointing at a hidden box. This lets a user
+  narrow a big multi-topic board down to just the topics they currently
+  care about, while the underlying dependency graph — which may
+  legitimately cross topics, e.g. a task in one topic blocking a task in
+  another — stays intact in the data regardless of what's currently shown.
   - Swimlane visibility is a *view* preference, not board data: it lives in
     the browser's `localStorage`, never written to `board.md`, consistent
     with §3's rule that the file only stores facts (text, done, edges,
     topic), never presentation state.
-- Within a visible swimlane, tasks still lay out left-to-right by
-  dependency depth (breadthfirst rank), so "which follows which" reads the
-  same way inside each band as it does on an unswimlaned board.
 
 ## 8. CLI companions (optional but recommended)
 
@@ -420,9 +455,10 @@ file format, the state-derivation rules, and the import logic.
 3. `scripts/board_server.py` — stdlib HTTP server wrapping (1)+(2) with
    GET/POST `/api/board` and `POST /api/board/import`, serving the static
    frontend.
-4. `static/board.html` + `board.js` — Cytoscape.js render of the graph
-   with computed colors, swimlane compound nodes + toggle checklist (§7),
-   click-to-toggle-done, add/delete/link interactions from §7, talking to
+4. `static/board.html` + `board.js` — hand-rolled SVG render of the graph
+   (see §6) with computed colors, the barycenter layout + topic stripes +
+   toggle checklist (§7), click-to-toggle-done, add/delete/link
+   interactions from §7, talking to
    the API from (3).
 5. `tt board` subcommand wiring in the `tt` bash script (launch server,
    open browser, `init`/`ls`/`import` at minimum; `add`/`link`/`done`/`rm`

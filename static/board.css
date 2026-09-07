@@ -80,10 +80,6 @@ button:hover { background: #f0f0ee; }
 #canvasWrap { flex: 1; overflow: auto; position: relative; }
 #canvas { display: block; }
 
-.lane-band { fill: #fbfbfa; stroke: var(--border); stroke-width: 1; }
-.lane-band.odd { fill: #f3f3f0; }
-.lane-label { font-size: 12px; fill: var(--muted); font-weight: 600; }
-
 .node-box {
   fill: var(--ready-bg);
   stroke: var(--ready);
@@ -105,8 +101,11 @@ button:hover { background: #f0f0ee; }
 }
 .node-state-dot { pointer-events: none; }
 
-.edge-path { fill: none; stroke: #9aa0a6; stroke-width: 1.5px; marker-end: url(#arrow); cursor: context-menu; }
-.edge-path:hover { stroke: var(--accent); stroke-width: 2.5px; }
+.edge-path { fill: none; stroke: #9aa0a6; stroke-width: 1.5px; marker-end: url(#arrow); pointer-events: none; }
+.edge-path.overpass { stroke-dasharray: 2 3; }
+
+.edge-hit { fill: none; stroke: transparent; stroke-width: 12px; cursor: context-menu; }
+.edge-path:has(+ .edge-hit:hover) { stroke: var(--accent); stroke-width: 2.5px; }
 
 #inspector textarea { width: 100%; font: inherit; }
 #inspector button { display: block; width: 100%; margin-top: 0.4rem; }

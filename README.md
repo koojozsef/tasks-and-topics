@@ -87,8 +87,15 @@ In the board:
   while blocked), or delete it — **bridging** the chain (its predecessors
   connect directly to its successors) or **cutting** it (edges just
   removed).
-- Tasks are grouped into **swimlanes** by topic; use the checklist in the
-  sidebar to show/hide lanes. A task with no topic lives in "(no topic)".
+- Each task's left edge is striped with a color for its **topic**; use the
+  swimlane checklist in the sidebar to show/hide tasks by topic. A task
+  with no topic lives under "(no topic)". Boxes are arranged by dependency
+  depth left-to-right and packed vertically to keep arrows short and
+  legible — not stacked into a full-height band per topic — so hiding a
+  topic tightens up the board instead of just blanking a row.
+- Arrows never end up hidden behind a box: one that would otherwise cut
+  straight through unrelated tasks (skipping several dependency layers at
+  once) is routed as a dashed arc above the board instead.
 
 **Import runs automatically** — on every GUI page load/refresh, and once
 whenever you run `tt board`/`tt board open` — so hand-edits to your notes

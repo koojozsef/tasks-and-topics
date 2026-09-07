@@ -7,13 +7,12 @@
   const NODE_W = 180;
   const NODE_H = 50;
   const ROW_GAP = 14;
-  const LANE_HEADER_H = 22;
-  const LANE_GAP = 12;
   const PADDING = 24;
+  const OVERPASS_MARGIN = 60; // headroom above row 0 for edges that skip columns to arc through
   const HIDDEN_LANES_KEY = "tt-board-hidden-lanes";
+  const TOPIC_COLORS = ["#1565c0", "#2e7d32", "#8e24aa", "#ef6c00", "#00838f", "#ad1457", "#5d4037", "#455a64"];
 
   const svg = document.getElementById("canvas");
-  const lanesLayer = document.getElementById("lanesLayer");
   const edgesLayer = document.getElementById("edgesLayer");
   const nodesLayer = document.getElementById("nodesLayer");
   const swimlaneList = document.getElementById("swimlaneList");
@@ -84,6 +83,13 @@
     return task.topic || NO_TOPIC;
   }
 
+  function topicColor(topic) {
+    if (!topic || topic === NO_TOPIC) return "#9aa0a6";
+    let h = 0;
+    for (let i = 0; i < topic.length; i++) h = (h * 31 + topic.charCodeAt(i)) >>> 0;
+    return TOPIC_COLORS[h % TOPIC_COLORS.length];
+  }
+
   function laneOrder() {
     const order = state.topics.slice();
     const idx = order.indexOf(NO_TOPIC);
@@ -117,60 +123,96 @@
     return rank;
   }
 
+  // Layered layout: columns are strictly the dependency rank (the "how many
+  // layers deep" grid) — unchanged, always preserved. Rows are NOT grouped
+  // by topic anymore (that produced long, overlapping, cross-lane arrows);
+  // instead each rank-column's vertical order is chosen by a barycenter
+  // heuristic (classic layered-graph-drawing technique) so a task tends to
+  // land near the average row of the neighbors that connect to it —
+  // shorter edges, fewer crossings. Topic is now shown as a colored stripe
+  // on each box instead of a row band; the swimlane checklist still
+  // filters visibility, it just no longer dictates row position.
   function computeLayout() {
-    const ranks = computeRanks(state.tasks);
-    const lanes = laneOrder();
-    const laneIndex = new Map(lanes.map((l, i) => [l, i]));
-
+    const ranks = computeRanks(state.tasks); // over the full graph, so columns don't shift as lanes toggle
     const visibleTasks = state.tasks.filter((t) => !hiddenLanes.has(topicOf(t)));
+    const visibleIds = new Set(visibleTasks.map((t) => t.id));
+    const byId = new Map(visibleTasks.map((t) => [t.id, t]));
 
-    // group visible tasks by (lane, rank) to stack them without overlap
-    const cellGroups = new Map(); // "lane|rank" -> [taskId,...]
+    const byRank = new Map();
     for (const t of visibleTasks) {
-      const key = `${laneIndex.get(topicOf(t))}|${ranks.get(t.id)}`;
-      if (!cellGroups.has(key)) cellGroups.set(key, []);
-      cellGroups.get(key).push(t.id);
+      const r = ranks.get(t.id);
+      if (!byRank.has(r)) byRank.set(r, []);
+      byRank.get(r).push(t.id);
     }
-    for (const ids of cellGroups.values()) ids.sort();
+    const maxRank = byRank.size ? Math.max(...byRank.keys()) : 0;
 
-    // lane heights, based on the tallest stack anywhere in that lane
-    const laneMaxStack = new Map();
-    for (const [key, ids] of cellGroups) {
-      const lane = Number(key.split("|")[0]);
-      laneMaxStack.set(lane, Math.max(laneMaxStack.get(lane) || 0, ids.length));
+    const sortKey = (id) => {
+      const t = byId.get(id);
+      return `${t.topic || ""} ${id}`;
+    };
+
+    const order = new Map(); // taskId -> position index within its rank column
+    for (let r = 0; r <= maxRank; r++) {
+      const ids = (byRank.get(r) || []).slice().sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
+      ids.forEach((id, i) => order.set(id, i));
     }
 
-    const laneTop = new Map();
-    let y = PADDING;
-    const visibleLaneNames = lanes.filter((l) => !hiddenLanes.has(l) && laneMaxStack.has(laneIndex.get(l)));
-    for (const laneName of visibleLaneNames) {
-      const li = laneIndex.get(laneName);
-      laneTop.set(li, y);
-      const stack = laneMaxStack.get(li) || 1;
-      const h = LANE_HEADER_H + stack * NODE_H + (stack - 1) * ROW_GAP + PADDING;
-      y += h + LANE_GAP;
+    function neighbors(id, useSuccessors) {
+      if (useSuccessors) {
+        return visibleTasks.filter((x) => x.preds.includes(id)).map((x) => x.id);
+      }
+      return byId.get(id).preds.filter((p) => visibleIds.has(p));
     }
-    const totalHeight = y;
 
-    const positions = new Map(); // taskId -> {x,y,lane}
-    let maxRank = 0;
-    for (const [key, ids] of cellGroups) {
-      const [laneStr, rankStr] = key.split("|");
-      const lane = Number(laneStr);
-      const rank = Number(rankStr);
-      maxRank = Math.max(maxRank, rank);
-      const top = laneTop.get(lane);
-      ids.forEach((id, i) => {
-        positions.set(id, {
-          x: PADDING + rank * COL_W,
-          y: top + LANE_HEADER_H + i * (NODE_H + ROW_GAP),
-          lane,
+    function sweep(useSuccessors, rankList) {
+      for (const r of rankList) {
+        const ids = (byRank.get(r) || []).slice();
+        const scored = ids.map((id) => {
+          const ns = neighbors(id, useSuccessors);
+          const bc = ns.length ? ns.reduce((sum, nid) => sum + order.get(nid), 0) / ns.length : order.get(id);
+          return { id, bc };
         });
+        scored.sort((a, b) => a.bc - b.bc || (sortKey(a.id) < sortKey(b.id) ? -1 : 1));
+        scored.forEach((s, i) => order.set(s.id, i));
+      }
+    }
+
+    const ranksAsc = Array.from({ length: maxRank + 1 }, (_, i) => i);
+    sweep(false, ranksAsc.slice(1)); // forward: settle each column by its predecessors' rows
+    sweep(true, ranksAsc.slice(0, -1).reverse()); // backward: refine by successors' rows
+    sweep(false, ranksAsc.slice(1)); // forward again to settle after the refinement
+
+    const positions = new Map(); // taskId -> {x,y}
+    let maxRows = 0;
+    for (let r = 0; r <= maxRank; r++) {
+      const ids = (byRank.get(r) || []).slice().sort((a, b) => order.get(a) - order.get(b));
+      maxRows = Math.max(maxRows, ids.length);
+      ids.forEach((id, i) => {
+        positions.set(id, { x: PADDING + r * COL_W, y: OVERPASS_MARGIN + PADDING + i * (NODE_H + ROW_GAP) });
       });
     }
-    const totalWidth = PADDING * 2 + (maxRank + 1) * COL_W;
 
-    return { positions, laneTop, laneIndex, visibleLaneNames, totalWidth, totalHeight };
+    const totalWidth = PADDING * 2 + (maxRank + 1) * COL_W;
+    const totalHeight = OVERPASS_MARGIN + PADDING * 2 + maxRows * NODE_H + Math.max(0, maxRows - 1) * ROW_GAP;
+
+    return { positions, ranks, totalWidth, totalHeight };
+  }
+
+  // Fan out multiple edges touching the same node across a spread of the
+  // node's edge (right side for outgoing, left for incoming) instead of
+  // all through dead-center — cuts down edges overlapping each other right
+  // at shared nodes. Ordered by the neighbor's own row so the fan doesn't
+  // cross itself.
+  function fanAnchors(positions, nodeId, neighborIds) {
+    const pos = positions.get(nodeId);
+    const sorted = neighborIds.slice().sort((a, b) => {
+      const pa = positions.get(a), pb = positions.get(b);
+      return (pa ? pa.y : 0) - (pb ? pb.y : 0);
+    });
+    const n = sorted.length;
+    const map = new Map();
+    sorted.forEach((nid, i) => map.set(nid, pos.y + ((i + 1) / (n + 1)) * NODE_H));
+    return map;
   }
 
   function el(tag, attrs, parent) {
@@ -187,8 +229,8 @@
   function render() {
     renderSwimlaneList();
     const layout = computeLayout();
+    const positions = layout.positions;
 
-    lanesLayer.innerHTML = "";
     edgesLayer.innerHTML = "";
     nodesLayer.innerHTML = "";
 
@@ -196,60 +238,82 @@
     svg.setAttribute("height", Math.max(layout.totalHeight, 200));
     svg.setAttribute("viewBox", `0 0 ${Math.max(layout.totalWidth, 400)} ${Math.max(layout.totalHeight, 200)}`);
 
-    // lane bands + labels
-    layout.visibleLaneNames.forEach((name, i) => {
-      const li = layout.laneIndex.get(name);
-      const top = layout.laneTop.get(li);
-      const nextTop = i + 1 < layout.visibleLaneNames.length
-        ? layout.laneTop.get(layout.laneIndex.get(layout.visibleLaneNames[i + 1]))
-        : layout.totalHeight;
-      const h = nextTop - top - LANE_GAP;
-      el("rect", {
-        class: `lane-band${i % 2 ? " odd" : ""}`,
-        x: 2, y: top - 4, width: layout.totalWidth - 4, height: h + LANE_HEADER_H - 6,
-      }, lanesLayer);
-      el("text", { class: "lane-label", x: 10, y: top + 10 }, lanesLayer).textContent = name;
-    });
-
-    const positions = layout.positions;
     const visibleTasks = state.tasks.filter((t) => positions.has(t.id));
     const visibleIds = new Set(visibleTasks.map((t) => t.id));
-
     lastPositions = positions;
 
-    // edges (only when both endpoints are visible)
+    // predecessor/successor lists restricted to what's currently visible,
+    // used to fan out each node's edge anchor points (see fanAnchors)
+    const predsOf = new Map();
+    const succsOf = new Map();
+    for (const t of visibleTasks) predsOf.set(t.id, t.preds.filter((p) => visibleIds.has(p)));
     for (const t of visibleTasks) {
-      for (const p of t.preds) {
-        if (!visibleIds.has(p)) continue;
-        const a = positions.get(p);
-        const b = positions.get(t.id);
-        const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
-        const x2 = b.x, y2 = b.y + NODE_H / 2;
-        const midx = (x1 + x2) / 2;
-        const path = el("path", {
-          class: "edge-path",
-          d: `M ${x1} ${y1} C ${midx} ${y1}, ${midx} ${y2}, ${x2} ${y2}`,
-        }, edgesLayer);
-        path.addEventListener("contextmenu", (e) => {
-          e.preventDefault();
-          spliceOnEdge(p, t.id);
-        });
-        path.addEventListener("click", () => unlinkEdge(p, t.id));
+      for (const p of predsOf.get(t.id)) {
+        if (!succsOf.has(p)) succsOf.set(p, []);
+        succsOf.get(p).push(t.id);
       }
     }
+    const outAnchors = new Map(); // nodeId -> Map(succId -> y), on its right edge
+    const inAnchors = new Map(); // nodeId -> Map(predId -> y), on its left edge
+    for (const t of visibleTasks) {
+      outAnchors.set(t.id, fanAnchors(positions, t.id, succsOf.get(t.id) || []));
+      inAnchors.set(t.id, fanAnchors(positions, t.id, predsOf.get(t.id) || []));
+    }
 
-    // nodes
+    // nodes first (edges are drawn after, i.e. on top, so an arrow is never
+    // invisible behind a box — see the <g id="nodesLayer">/"edgesLayer">
+    // order in board.html, which is what actually decides paint order)
     for (const t of visibleTasks) {
       const pos = positions.get(t.id);
       const g = el("g", { transform: `translate(${pos.x},${pos.y})`, "data-id": t.id }, nodesLayer);
       const classes = ["node-box", t.state];
       if (t.id === selectedId) classes.push("selected");
       const rect = el("rect", { class: classes.join(" "), width: NODE_W, height: NODE_H }, g);
-      el("text", { class: "node-text", x: 8, y: 18 }, g).textContent = `${t.id}${t.done ? " ✓" : ""}`;
-      const label = el("text", { class: "node-text", x: 8, y: 36 }, g);
-      label.textContent = truncate(t.text, 28);
-      el("title", {}, g).textContent = `${t.text}\nstate: ${t.state}`;
+      el("rect", {
+        class: "topic-stripe", x: 0, y: 0, width: 4, height: NODE_H,
+        fill: topicColor(t.topic), "pointer-events": "none",
+      }, g);
+      el("text", { class: "node-text", x: 12, y: 18 }, g).textContent = `${t.id}${t.done ? " ✓" : ""}`;
+      const label = el("text", { class: "node-text", x: 12, y: 36 }, g);
+      label.textContent = truncate(t.text, 26);
+      el("title", {}, g).textContent = `${t.text}\nstate: ${t.state}\ntopic: ${topicOf(t)}`;
       rect.addEventListener("mousedown", (e) => onNodeMouseDown(t.id, e));
+    }
+
+    // edges (only when both endpoints are visible), fanned across each
+    // node's edge so multiple edges at one node don't all overlap. An edge
+    // whose rank gap is more than 1 column would otherwise cut straight
+    // through the box(es) in the column(s) it skips — that's routed as an
+    // "overpass" arcing through the headroom above row 0 instead.
+    let overpassCount = 0;
+    for (const t of visibleTasks) {
+      for (const p of predsOf.get(t.id)) {
+        const a = positions.get(p);
+        const b = positions.get(t.id);
+        const x1 = a.x + NODE_W, y1 = outAnchors.get(p).get(t.id);
+        const x2 = b.x, y2 = inAnchors.get(t.id).get(p);
+        const gap = layout.ranks.get(t.id) - layout.ranks.get(p);
+
+        let d, isOverpass = false;
+        if (gap <= 1) {
+          const midx = (x1 + x2) / 2;
+          d = `M ${x1} ${y1} C ${midx} ${y1}, ${midx} ${y2}, ${x2} ${y2}`;
+        } else {
+          isOverpass = true;
+          const topY = 12 + (overpassCount++ % 4) * 12;
+          d = `M ${x1} ${y1} C ${x1 + 24} ${topY}, ${x2 - 24} ${topY}, ${x2} ${y2}`;
+        }
+        el("path", { class: `edge-path${isOverpass ? " overpass" : ""}`, d }, edgesLayer);
+        // a fat, invisible companion path carries the click/right-click
+        // handlers — the visible line above is only ~1.5px wide, too thin
+        // to reliably click on its own
+        const hit = el("path", { class: "edge-hit", d }, edgesLayer);
+        hit.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          spliceOnEdge(p, t.id);
+        });
+        hit.addEventListener("click", () => unlinkEdge(p, t.id));
+      }
     }
   }
 
@@ -267,7 +331,11 @@
         saveHiddenLanes();
         render();
       });
+      const swatch = document.createElement("span");
+      swatch.className = "chip";
+      swatch.style.background = topicColor(name);
       label.appendChild(cb);
+      label.appendChild(swatch);
       label.appendChild(document.createTextNode(" " + name));
       li.appendChild(label);
       swimlaneList.appendChild(li);
@@ -473,8 +541,7 @@
   });
 
   svg.addEventListener("dblclick", (e) => {
-    const isBackground = e.target === svg || e.target.classList.contains("lane-band");
-    if (!isBackground) return;
+    if (e.target !== svg) return;
     const text = prompt("New task text:");
     if (!text) return;
     api("add", { text })
