@@ -1,7 +1,13 @@
 # Visual Planner — Design Plan
 
-Status: proposal, not yet implemented. This document specs a visual, dependency-graph
-planner that complements `tt` without disturbing its existing commands or files.
+Status: implemented (v1). This document specs a visual, dependency-graph
+planner that complements `tt` without disturbing its existing commands or
+files. `tt board` is live — see `scripts/board_lib.py`,
+`scripts/board_server.py`, and `static/`. §6 and §7 note the one deliberate
+deviation from the original proposal (a hand-rolled SVG frontend instead of
+a vendored Cytoscape.js, since this environment had no network access to
+fetch one) and §11/§12 are left as-is for history; open questions there
+were resolved as documented inline rather than re-asked.
 
 ## 1. Goal
 
@@ -159,26 +165,39 @@ readyToStart:= NOT done AND NOT blocked
   so "blocked until predecessors done" is always well-defined and can't
   deadlock.
 
-## 6. Architecture
+## 6. Architecture (as implemented)
 
 ```
 tt board  ─▶ scripts/board_server.py (python3, stdlib http.server only)
               │
-              ├─ GET  /            → serves static/board.html + board.js (vendored Cytoscape.js)
-              ├─ GET  /api/board   → parses board.md → JSON {tasks, edges, computed state}
-              └─ POST /api/board   → validates + serializes JSON back → board.md (atomic write)
+              ├─ GET  /                 → static/board.html (+ /board.js, /board.css)
+              ├─ GET  /api/board        → board_lib.load() + compute_states() → JSON
+              └─ POST /api/board/<verb> → add/link/unlink/done/rename/delete/splice/import,
+                                           via board_lib.py, then re-saves board.md and
+                                           returns the updated board as JSON
 
 Browser (Simple Browser in VS Code, or any local browser) ─▶ http://127.0.0.1:<port>
 ```
 
 - `board_server.py` uses only `http.server`/`json` from the standard
-  library — no pip install, no virtualenv.
-- The frontend is one static HTML page plus a vendored copy of
-  **Cytoscape.js** (single-file MIT-licensed graph library,
-  `third_party/cytoscape.min.js`, checked into the repo so the tool works
-  fully offline — no CDN dependency, which matters for WSL environments
-  with restricted network policies). Layout uses Cytoscape's **built-in**
-  `breadthfirst` directed layout, so no extra plugin files are needed.
+  library — no pip install, no virtualenv. `board_lib.py` (parser,
+  state derivation, cycle detection, bridge-delete, import) is imported
+  directly by the server and also invoked as a CLI by `tt board <cmd>`
+  (§8), so there is exactly one implementation of the file format and
+  the state rules, per the original design goal.
+- **Frontend deviates from the original Cytoscape.js proposal**: this
+  execution environment has no outbound network access, so vendoring a
+  third-party graph library wasn't possible. `static/board.js` is instead
+  a small hand-rolled SVG renderer (~350 lines of vanilla JS, no
+  libraries at all) — it computes task rank by longest dependency path,
+  groups tasks into swimlane bands by topic, and draws boxes/arrows
+  directly as SVG elements. This ends up *more* consistent with "keep it
+  as simple as possible" than the original plan (genuinely zero
+  third-party code to vet, vendor, or update) at the cost of a plainer
+  visual style than a mature graph library would give; revisit if a
+  richer interaction model (smooth dragging, zoom/pan gestures, curved
+  auto-routing) is wanted later and network access to fetch a library is
+  available.
 - `tt board` starts the server on a free localhost port, prints the URL,
   and best-effort opens a browser:
   `wslview` (WSL, if `wslu` present) → `xdg-open` (Linux) → else just print
@@ -204,42 +223,49 @@ Browser (Simple Browser in VS Code, or any local browser) ─▶ http://127.0.0.
   tooltip explaining which predecessors are still open).
 - **Add on free space**: a toolbar "+ Task" button (or double-click empty
   canvas) creates a new node with no edges — immediately `readyToStart`.
-- **Add on a connection line**: hovering an edge shows a "+" affordance;
-  clicking it splices a new task into that edge — `a -> b` becomes
-  `a -> new -> b` (new task inherits the position in the chain; `a`'s
-  original successor is now gated behind the new task too).
-- **Draw a dependency**: drag from one box's edge-handle to another to add
-  `<- ` predecessor. Rejected client-side (with a message) if it would:
+- **Add on a connection line**: right-clicking an edge prompts for new task
+  text and splices it into that edge — `a -> b` becomes `a -> new -> b`
+  (new task inherits the position in the chain; `a`'s original successor
+  is now gated behind the new task too). `POST /api/board/splice`.
+- **Draw a dependency**: as implemented, a click-based "link mode" rather
+  than a drag gesture (simpler to build without a graph library and just
+  as discoverable): select a task, click its "Link… (add a predecessor)"
+  button, then click the task that should precede it (Esc cancels).
+  Rejected server-side (with the reason shown to the user) if it would:
   - create a self-loop,
   - create a cycle (DAG check via graph reachability before accepting),
   - duplicate an existing edge.
-- **Delete a task**: confirmation, then two reconnect choices offered:
-  1. *Bridge* (default) — task's predecessors become direct predecessors of
-     its successors, preserving the rest of the chain (`a -> x -> b`,
-     delete `x` ⇒ `a -> b`).
-  2. *Cut* — just remove the task and all its edges, no reconnection.
-- **Layout / dragging**: boxes auto-arrange (breadthfirst by dependency
-  depth) on load. Users may drag a box to declutter a view, but per §3 no
-  position is persisted — a reload/relayout is deterministic and always
-  reflects the same graph. (Persisting manual layout is a possible v2 —
-  see §10 — deliberately deferred so the file format stays pure data.)
+- **Delete a task**: a confirm dialog, then one of two buttons:
+  1. *Delete (bridge chain)* (recommended default) — task's predecessors
+     become direct predecessors of its successors, preserving the rest of
+     the chain (`a -> x -> b`, delete `x` ⇒ `a -> b`).
+  2. *Delete (cut edges)* — just remove the task and all its edges, no
+     reconnection.
+- **Layout**: boxes auto-arrange by dependency rank (column) and swimlane
+  (row) on every load — deterministic, so per §3 no position is persisted.
+  Manual dragging is not implemented in v1 (see §6's note on the frontend
+  deviation) — a possible v2 addition alongside persisted manual layout,
+  see §10.
 - **Rename / edit text**: click a box's text to edit inline.
 - **Swimlanes**: every distinct topic present among the board's tasks (via
   the `#topic:` tag from §3/§4) renders as its own horizontal band, labeled
   with that topic's name; tasks with no tag live in an always-present
-  "(no topic)" band. Implemented as Cytoscape **compound nodes** (one
-  parent node per swimlane, tasks as children) — built into Cytoscape core,
-  no extra plugin file needed.
+  "(no topic)" band. As implemented (§6 — no Cytoscape, so no compound
+  nodes): `board.js` computes each task's dependency rank (longest path
+  from a root) and groups tasks by topic into rows; rank picks the column,
+  swimlane picks the row-band, and the band rectangle + label are drawn
+  directly as SVG behind the nodes.
 - **Swimlane on/off toggle**: a checklist in the sidebar/legend lists every
-  swimlane currently on the board; unchecking one hides that band and all
-  its tasks (`.hide()` on the compound parent cascades to children). An
-  edge is only drawn when *both* of its endpoints are in a visible
-  swimlane, so toggling a lane off can never leave a dangling arrow
-  pointing at a hidden box. This lets a user narrow a big multi-topic board
-  down to just the topics they currently care about, while the underlying
-  dependency graph — which may legitimately cross swimlanes, e.g. a task in
-  one topic blocking a task in another — stays intact in the data
-  regardless of what's currently shown.
+  swimlane currently on the board; unchecking one removes that band and
+  all its tasks from the drawing (dependency ranks are still computed over
+  the *full* graph first, so column positions don't jump around as lanes
+  are toggled). An edge is only drawn when *both* of its endpoints are in
+  a visible swimlane, so toggling a lane off can never leave a dangling
+  arrow pointing at a hidden box. This lets a user narrow a big
+  multi-topic board down to just the topics they currently care about,
+  while the underlying dependency graph — which may legitimately cross
+  swimlanes, e.g. a task in one topic blocking a task in another — stays
+  intact in the data regardless of what's currently shown.
   - Swimlane visibility is a *view* preference, not board data: it lives in
     the browser's `localStorage`, never written to `board.md`, consistent
     with §3's rule that the file only stores facts (text, done, edges,

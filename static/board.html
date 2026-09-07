@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tt board</title>
+<link rel="stylesheet" href="/board.css">
+</head>
+<body>
+  <header id="toolbar">
+    <h1>tt board</h1>
+    <button id="addTaskBtn" title="Add a task on free space">+ Task</button>
+    <button id="importBtn" title="Import todos from tasks/ and topics/">Import</button>
+    <span id="linkHint" class="hint" hidden>Click the task this should depend on&hellip; (Esc to cancel)</span>
+    <span id="status" class="status" role="status" aria-live="polite"></span>
+  </header>
+
+  <div id="layout">
+    <aside id="legend">
+      <h2>Swimlanes</h2>
+      <ul id="swimlaneList"></ul>
+      <h2>Legend</h2>
+      <ul class="state-legend">
+        <li><span class="chip done"></span> done</li>
+        <li><span class="chip ready"></span> readyToStart</li>
+        <li><span class="chip blocked"></span> blocked</li>
+      </ul>
+      <p class="tip">Double-click empty canvas to add a task.<br>
+         Right-click an arrow to insert a task on it.<br>
+         Select a task, then "Link&hellip;" to draw a dependency.</p>
+    </aside>
+
+    <main id="canvasWrap">
+      <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" />
+          </marker>
+        </defs>
+        <g id="lanesLayer"></g>
+        <g id="edgesLayer"></g>
+        <g id="nodesLayer"></g>
+      </svg>
+    </main>
+
+    <aside id="inspector" hidden>
+      <button id="closeInspector" class="close" title="Close">&times;</button>
+      <h2>Task <span id="inspTitleId"></span></h2>
+      <label>Text
+        <textarea id="inspText" rows="2"></textarea>
+      </label>
+      <button id="inspSave">Save text</button>
+      <p>State: <span id="inspState" class="state-badge"></span></p>
+      <p id="inspBlockedReason" class="blocked-reason" hidden></p>
+      <label class="checkbox-row">
+        <input type="checkbox" id="inspDone">
+        Done
+      </label>
+      <p id="inspTopic" class="topic-row"></p>
+      <button id="inspLink">Link&hellip; (add a predecessor)</button>
+      <hr>
+      <button id="inspDeleteBridge">Delete (bridge chain)</button>
+      <button id="inspDeleteCut">Delete (cut edges)</button>
+    </aside>
+  </div>
+
+  <script src="/board.js"></script>
+</body>
+</html>
